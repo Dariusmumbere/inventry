@@ -37,13 +37,28 @@ pool = None
 async def get_db():
     global pool
     if pool is None:
-        pool = await asyncpg.create_pool(
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASSWORD"),
-            database=os.getenv("DB_NAME"),
-            host=os.getenv("DB_HOST"),
-            port=os.getenv("DB_PORT")
-        )
+        # Use Render's DATABASE_URL if available, otherwise use .env
+        database_url = os.getenv("DATABASE_URL")
+        if database_url:
+            # Parse the DATABASE_URL into connection parameters
+            import urllib.parse
+            parsed = urllib.parse.urlparse(database_url)
+            pool = await asyncpg.create_pool(
+                user=parsed.username,
+                password=parsed.password,
+                database=parsed.path[1:],  # remove leading '/'
+                host=parsed.hostname,
+                port=parsed.port
+            )
+        else:
+            # Fallback to individual environment variables
+            pool = await asyncpg.create_pool(
+                user=os.getenv("DB_USER"),
+                password=os.getenv("DB_PASSWORD"),
+                database=os.getenv("DB_NAME"),
+                host=os.getenv("DB_HOST"),
+                port=os.getenv("DB_PORT", 5432)
+            )
     return pool
 
 # Models
