@@ -437,3 +437,7 @@ async def sync(data: SyncData, db=Depends(get_db)):
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.utcnow()}
+
+@app.get("/")
+async def root():
+    return {"message": "StockMaster UG Inventory API"}
