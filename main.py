@@ -106,13 +106,13 @@ class Adjustment(BaseModel):
     type: str  # 'add' or 'remove'
     quantity: int
     reason: str
-    user: Optional[str] = None
+    username: Optional[str] = None  # Changed from 'user' to 'username'
 
 class Activity(BaseModel):
     id: int
     date: datetime
     activity: str
-    user: str
+    username: str  # Changed from 'user' to 'username'
     details: str
 
 class Settings(BaseModel):
@@ -207,7 +207,7 @@ async def init_db():
                 type TEXT NOT NULL,
                 quantity INTEGER NOT NULL,
                 reason TEXT NOT NULL,
-                user TEXT
+                username TEXT
             )
         ''')
         
@@ -216,7 +216,7 @@ async def init_db():
                 id SERIAL PRIMARY KEY,
                 date TIMESTAMP NOT NULL,
                 activity TEXT NOT NULL,
-                user TEXT NOT NULL,
+                username TEXT NOT NULL,
                 details TEXT NOT NULL
             )
         ''')
@@ -259,7 +259,7 @@ async def shutdown():
 async def sync(data: SyncData, db=Depends(get_db)):
     try:
         server_time = datetime.utcnow()
-        result = SyncData(server_time=server_time)
+        result = SyncData(last_sync_time=server_time)
         
         async with db.acquire() as conn:
             # Process products
@@ -372,18 +372,18 @@ async def sync(data: SyncData, db=Depends(get_db)):
                     await conn.execute('''
                         UPDATE adjustments SET 
                             date = $1, product_id = $2, type = $3,
-                            quantity = $4, reason = $5, user = $6
+                            quantity = $4, reason = $5, username = $6
                         WHERE id = $7
                     ''', adjustment.date, adjustment.product_id, adjustment.type,
-                        adjustment.quantity, adjustment.reason, adjustment.user, adjustment.id)
+                        adjustment.quantity, adjustment.reason, adjustment.username, adjustment.id)
                 else:
                     await conn.execute('''
                         INSERT INTO adjustments (
                             id, date, product_id, type, quantity,
-                            reason, user
+                            reason, username
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7)
                     ''', adjustment.id, adjustment.date, adjustment.product_id, adjustment.type,
-                        adjustment.quantity, adjustment.reason, adjustment.user)
+                        adjustment.quantity, adjustment.reason, adjustment.username)
                 result.adjustments.append(adjustment)
             
             # Process activities
@@ -392,15 +392,15 @@ async def sync(data: SyncData, db=Depends(get_db)):
                 if existing:
                     await conn.execute('''
                         UPDATE activities SET 
-                            date = $1, activity = $2, user = $3, details = $4
+                            date = $1, activity = $2, username = $3, details = $4
                         WHERE id = $5
-                    ''', activity.date, activity.activity, activity.user, activity.details, activity.id)
+                    ''', activity.date, activity.activity, activity.username, activity.details, activity.id)
                 else:
                     await conn.execute('''
                         INSERT INTO activities (
-                            id, date, activity, user, details
+                            id, date, activity, username, details
                         ) VALUES ($1, $2, $3, $4, $5)
-                    ''', activity.id, activity.date, activity.activity, activity.user, activity.details)
+                    ''', activity.id, activity.date, activity.activity, activity.username, activity.details)
                 result.activities.append(activity)
             
             # Process settings
