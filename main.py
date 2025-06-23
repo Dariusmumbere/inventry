@@ -3,20 +3,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from passlib.context import CryptContext
-from jose import JWTError, jwt
-from datetime import timedelta
 import asyncpg
 import os
 from dotenv import load_dotenv
 import logging
 import json
 from fastapi.encoders import jsonable_encoder
-
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-here")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 # Load environment variables
 load_dotenv()
@@ -174,30 +166,6 @@ class SyncData(BaseModel):
             datetime: lambda v: v.isoformat() if v else None
         }
 
-class UserBase(BaseModel):
-    username: str
-    email: Optional[str] = None
-    full_name: Optional[str] = None
-    role: str = "user"
-
-class UserCreate(UserBase):
-    password: str
-
-class UserInDB(UserBase):
-    id: int
-    hashed_password: str
-    is_active: bool = True
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-
-class TokenData(BaseModel):
-    username: Optional[str] = None
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
 # Database initialization
 async def init_db():
     pool = await get_db()
@@ -282,19 +250,6 @@ async def init_db():
                 activity TEXT NOT NULL,
                 "user" TEXT NOT NULL,
                 details TEXT NOT NULL
-            )
-        ''')
-        
-        await conn.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                username TEXT NOT NULL UNIQUE,
-                email TEXT,
-                full_name TEXT,
-                hashed_password TEXT NOT NULL,
-                role TEXT NOT NULL DEFAULT 'user',
-                is_active BOOLEAN DEFAULT TRUE,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
@@ -422,7 +377,7 @@ def record_to_settings(record) -> Settings:
 
 # Improved Sync endpoint with better error handling and timezone awareness
 @app.post("/sync", response_model=SyncData)
-async def sync(data: Dict[str, Any], db=Depends(get_db), current_user: dict = Depends(get_current_active_user)):
+async def sync(data: Dict[str, Any], db=Depends(get_db)):
     try:
         # Validate and parse the incoming data
         sync_data = SyncData(**data)
@@ -668,91 +623,3 @@ async def sync_status():
         "last_sync_time": datetime.now(timezone.utc).isoformat(),
         "message": "Sync service is operational"
     }
-
-def verify_password(plain_password: str, hashed_password: str):
-    return pwd_context.verify(plain_password, hashed_password)
-
-def get_password_hash(password: str):
-    return pwd_context.hash(password)
-
-async def authenticate_user(db, username: str, password: str):
-    user = await db.fetchrow("SELECT * FROM users WHERE username = $1", username)
-    if not user:
-        return False
-    if not verify_password(password, user["hashed_password"]):
-        return False
-    return user
-
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.now(timezone.utc) + expires_delta
-    else:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-async def get_current_user(token: str = Depends(oauth2_scheme), db=Depends(get_db)):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-        token_data = TokenData(username=username)
-    except JWTError:
-        raise credentials_exception
-    
-    user = await db.fetchrow("SELECT * FROM users WHERE username = $1", token_data.username)
-    if user is None:
-        raise credentials_exception
-    return user
-
-async def get_current_active_user(current_user: dict = Depends(get_current_user)):
-    if not current_user["is_active"]:
-        raise HTTPException(status_code=400, detail="Inactive user")
-    return current_user
-
-@app.post("/token", response_model=Token)
-async def login_for_access_token(
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    db=Depends(get_db)
-):
-    user = await authenticate_user(db, form_data.username, form_data.password)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user["username"]}, expires_delta=access_token_expires
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
-
-@app.post("/users/", response_model=UserInDB)
-async def create_user(user: UserCreate, db=Depends(get_db)):
-    hashed_password = get_password_hash(user.password)
-    existing_user = await db.fetchrow("SELECT * FROM users WHERE username = $1", user.username)
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Username already registered")
-    
-    new_user = await db.fetchrow(
-        '''
-        INSERT INTO users (username, email, full_name, hashed_password, role)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING id, username, email, full_name, role, is_active, created_at
-        ''',
-        user.username, user.email, user.full_name, hashed_password, user.role
-    )
-    return new_user
-
-@app.get("/users/me/", response_model=UserInDB)
-async def read_users_me(current_user: dict = Depends(get_current_active_user)):
-    return current_user
