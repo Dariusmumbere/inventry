@@ -142,7 +142,7 @@ class Activity(BaseModel):
     id: int
     date: datetime
     activity: str
-    username: str = "system"
+    username: str = "system"  # Changed from Optional to required with default
     details: str
 
     class Config:
@@ -362,7 +362,7 @@ def record_to_adjustment(record) -> Adjustment:
         type=record['type'],
         quantity=record['quantity'],
         reason=record['reason'],
-        username=record.get('username', record.get('user', 'system'))
+        username=record.get('username', 'system')
     )
 
 def record_to_activity(record) -> Activity:
@@ -370,7 +370,7 @@ def record_to_activity(record) -> Activity:
         id=record['id'],
         date=make_timezone_naive(record['date']),
         activity=record['activity'],
-        username=record.get('username', record.get('user', 'system')),
+        username=record.get('username', 'system'),
         details=record['details']
     )
 
@@ -539,7 +539,7 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
                             adjustment.quantity, adjustment.reason, adjustment.username or "system")
                 result.adjustments.append(adjustment)
             
-            # Process activities
+            # Process activities - fixed to ensure username is never null
             for activity in sync_data.activities:
                 existing = await conn.fetchrow('SELECT * FROM activities WHERE id = $1', activity.id)
                 if existing:
