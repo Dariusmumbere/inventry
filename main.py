@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 import asyncpg
 import os
@@ -46,7 +46,7 @@ async def get_db():
 class Product(BaseModel):
     id: int
     name: str
-    category_id: int
+    category_id: Optional[int] = None
     description: Optional[str] = None
     purchase_price: float
     selling_price: float
@@ -54,7 +54,7 @@ class Product(BaseModel):
     reorder_level: int
     unit: str
     barcode: Optional[str] = None
-    created_at: datetime
+    created_at: Optional[datetime] = None
 
 class Category(BaseModel):
     id: int
@@ -345,23 +345,23 @@ def record_to_settings(record) -> Settings:
         purchase_prefix=record['purchase_prefix']
     )
 
-# Sync endpoint
+# Improved Sync endpoint with better error handling
 @app.post("/sync", response_model=SyncData)
-async def sync(data: SyncData, db=Depends(get_db)):
+async def sync(data: Dict[str, Any], db=Depends(get_db)):
     try:
-        # Convert the incoming data to JSON-serializable format
+        # Validate and parse the incoming data
+        sync_data = SyncData(**data)
         server_time = datetime.utcnow()
-        result_data = jsonable_encoder(data)
         
-        logger.info(f"Received sync data with {len(result_data.get('products', []))} products, "
-                    f"{len(result_data.get('categories', []))} categories, "
-                    f"{len(result_data.get('sales', []))} sales")
+        logger.info(f"Received sync data with {len(sync_data.products)} products, "
+                   f"{len(sync_data.categories)} categories, "
+                   f"{len(sync_data.sales)} sales")
         
         result = SyncData(last_sync_time=server_time)
         
         async with db.acquire() as conn:
             # Process products
-            for product in data.products:
+            for product in sync_data.products:
                 existing = await conn.fetchrow('SELECT * FROM products WHERE id = $1', product.id)
                 if existing:
                     await conn.execute('''
@@ -377,15 +377,15 @@ async def sync(data: SyncData, db=Depends(get_db)):
                     await conn.execute('''
                         INSERT INTO products (
                             id, name, category_id, description, purchase_price,
-                            selling_price, stock, reorder_level, unit, barcode
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                            selling_price, stock, reorder_level, unit, barcode, created_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                     ''', product.id, product.name, product.category_id, product.description,
                         product.purchase_price, product.selling_price, product.stock,
-                        product.reorder_level, product.unit, product.barcode)
+                        product.reorder_level, product.unit, product.barcode, product.created_at or datetime.utcnow())
                 result.products.append(product)
             
             # Process categories
-            for category in data.categories:
+            for category in sync_data.categories:
                 existing = await conn.fetchrow('SELECT * FROM categories WHERE id = $1', category.id)
                 if existing:
                     await conn.execute('''
@@ -398,7 +398,7 @@ async def sync(data: SyncData, db=Depends(get_db)):
                 result.categories.append(category)
             
             # Process suppliers
-            for supplier in data.suppliers:
+            for supplier in sync_data.suppliers:
                 existing = await conn.fetchrow('SELECT * FROM suppliers WHERE id = $1', supplier.id)
                 if existing:
                     await conn.execute('''
@@ -422,13 +422,13 @@ async def sync(data: SyncData, db=Depends(get_db)):
                 result.suppliers.append(supplier)
             
             # Process sales
-            for sale in data.sales:
+            for sale in sync_data.sales:
                 existing = await conn.fetchrow('SELECT * FROM sales WHERE id = $1', sale.id)
                 if existing:
                     await conn.execute('''
                         UPDATE sales SET 
                             date = $1, invoice_number = $2, customer = $3,
-                            items = $4, payment_method = $5, notes = $6
+                            items = $4::jsonb, payment_method = $5, notes = $6
                         WHERE id = $7
                     ''', sale.date, sale.invoice_number, sale.customer,
                         json.dumps([item.dict() for item in sale.items]), 
@@ -438,20 +438,20 @@ async def sync(data: SyncData, db=Depends(get_db)):
                         INSERT INTO sales (
                             id, date, invoice_number, customer, items,
                             payment_method, notes
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
                     ''', sale.id, sale.date, sale.invoice_number, sale.customer,
                         json.dumps([item.dict() for item in sale.items]), 
                         sale.payment_method, sale.notes)
                 result.sales.append(sale)
             
             # Process purchases
-            for purchase in data.purchases:
+            for purchase in sync_data.purchases:
                 existing = await conn.fetchrow('SELECT * FROM purchases WHERE id = $1', purchase.id)
                 if existing:
                     await conn.execute('''
                         UPDATE purchases SET 
                             date = $1, reference_number = $2, supplier_id = $3,
-                            items = $4, payment_method = $5, notes = $6
+                            items = $4::jsonb, payment_method = $5, notes = $6
                         WHERE id = $7
                     ''', purchase.date, purchase.reference_number, purchase.supplier_id,
                         json.dumps([item.dict() for item in purchase.items]), 
@@ -461,14 +461,14 @@ async def sync(data: SyncData, db=Depends(get_db)):
                         INSERT INTO purchases (
                             id, date, reference_number, supplier_id, items,
                             payment_method, notes
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
                     ''', purchase.id, purchase.date, purchase.reference_number, purchase.supplier_id,
                         json.dumps([item.dict() for item in purchase.items]), 
                         purchase.payment_method, purchase.notes)
                 result.purchases.append(purchase)
             
             # Process adjustments
-            for adjustment in data.adjustments:
+            for adjustment in sync_data.adjustments:
                 existing = await conn.fetchrow('SELECT * FROM adjustments WHERE id = $1', adjustment.id)
                 if existing:
                     await conn.execute('''
@@ -489,7 +489,7 @@ async def sync(data: SyncData, db=Depends(get_db)):
                 result.adjustments.append(adjustment)
             
             # Process activities
-            for activity in data.activities:
+            for activity in sync_data.activities:
                 existing = await conn.fetchrow('SELECT * FROM activities WHERE id = $1', activity.id)
                 if existing:
                     await conn.execute('''
@@ -506,42 +506,42 @@ async def sync(data: SyncData, db=Depends(get_db)):
                 result.activities.append(activity)
             
             # Process settings
-            if data.settings:
+            if sync_data.settings:
                 await conn.execute('''
                     UPDATE settings SET 
                         business_name = $1, currency = $2, tax_rate = $3,
                         low_stock_threshold = $4, invoice_prefix = $5,
                         purchase_prefix = $6, updated_at = CURRENT_TIMESTAMP
-                ''', data.settings.business_name, data.settings.currency, data.settings.tax_rate,
-                    data.settings.low_stock_threshold, data.settings.invoice_prefix,
-                    data.settings.purchase_prefix)
-                result.settings = data.settings
+                ''', sync_data.settings.business_name, sync_data.settings.currency, sync_data.settings.tax_rate,
+                    sync_data.settings.low_stock_threshold, sync_data.settings.invoice_prefix,
+                    sync_data.settings.purchase_prefix)
+                result.settings = sync_data.settings
             
             # Get all data from server to send back to client
-            products = await conn.fetch('SELECT * FROM products')
-            result.products = [record_to_product(p) for p in products]
+            product_records = await conn.fetch('SELECT * FROM products')
+            result.products = [record_to_product(p) for p in product_records]
             
-            categories = await conn.fetch('SELECT * FROM categories')
-            result.categories = [record_to_category(c) for c in categories]
+            category_records = await conn.fetch('SELECT * FROM categories')
+            result.categories = [record_to_category(c) for c in category_records]
             
-            suppliers = await conn.fetch('SELECT * FROM suppliers')
-            result.suppliers = [record_to_supplier(s) for s in suppliers]
+            supplier_records = await conn.fetch('SELECT * FROM suppliers')
+            result.suppliers = [record_to_supplier(s) for s in supplier_records]
             
-            sales = await conn.fetch('SELECT * FROM sales')
-            result.sales = [record_to_sale(s) for s in sales]
+            sale_records = await conn.fetch('SELECT * FROM sales')
+            result.sales = [record_to_sale(s) for s in sale_records]
             
-            purchases = await conn.fetch('SELECT * FROM purchases')
-            result.purchases = [record_to_purchase(p) for p in purchases]
+            purchase_records = await conn.fetch('SELECT * FROM purchases')
+            result.purchases = [record_to_purchase(p) for p in purchase_records]
             
-            adjustments = await conn.fetch('SELECT * FROM adjustments')
-            result.adjustments = [record_to_adjustment(a) for a in adjustments]
+            adjustment_records = await conn.fetch('SELECT * FROM adjustments')
+            result.adjustments = [record_to_adjustment(a) for a in adjustment_records]
             
-            activities = await conn.fetch('SELECT * FROM activities')
-            result.activities = [record_to_activity(a) for a in activities]
+            activity_records = await conn.fetch('SELECT * FROM activities')
+            result.activities = [record_to_activity(a) for a in activity_records]
             
-            settings = await conn.fetchrow('SELECT * FROM settings LIMIT 1')
-            if settings:
-                result.settings = record_to_settings(settings)
+            settings_record = await conn.fetchrow('SELECT * FROM settings LIMIT 1')
+            if settings_record:
+                result.settings = record_to_settings(settings_record)
             
         logger.info(f"Sync completed successfully. Returning {len(result.products)} products, "
                    f"{len(result.categories)} categories, {len(result.sales)} sales")
@@ -560,10 +560,11 @@ async def sync(data: SyncData, db=Depends(get_db)):
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.utcnow()}
 
-# New endpoint to get sync status
+# Sync status endpoint
 @app.get("/sync/status")
 async def sync_status():
     return {
-        "last_sync_time": datetime.utcnow(),
-        "status": "ready"
+        "status": "ready",
+        "last_sync_time": datetime.utcnow().isoformat(),
+        "message": "Sync service is operational"
     }
