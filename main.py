@@ -208,7 +208,7 @@ async def init_db():
                 type TEXT NOT NULL,
                 quantity INTEGER NOT NULL,
                 reason TEXT NOT NULL,
-                user TEXT
+                "user" TEXT
             )
         ''')
         
@@ -217,7 +217,7 @@ async def init_db():
                 id SERIAL PRIMARY KEY,
                 date TIMESTAMP NOT NULL,
                 activity TEXT NOT NULL,
-                user TEXT NOT NULL,
+                "user" TEXT NOT NULL,
                 details TEXT NOT NULL
             )
         ''')
@@ -466,7 +466,7 @@ async def sync(data: SyncData, db=Depends(get_db)):
                     await conn.execute('''
                         UPDATE adjustments SET 
                             date = $1, product_id = $2, type = $3,
-                            quantity = $4, reason = $5, user = $6
+                            quantity = $4, reason = $5, "user" = $6
                         WHERE id = $7
                     ''', adjustment.date, adjustment.product_id, adjustment.type,
                         adjustment.quantity, adjustment.reason, adjustment.user, adjustment.id)
@@ -474,7 +474,7 @@ async def sync(data: SyncData, db=Depends(get_db)):
                     await conn.execute('''
                         INSERT INTO adjustments (
                             id, date, product_id, type, quantity,
-                            reason, user
+                            reason, "user"
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7)
                     ''', adjustment.id, adjustment.date, adjustment.product_id, adjustment.type,
                         adjustment.quantity, adjustment.reason, adjustment.user)
@@ -486,13 +486,13 @@ async def sync(data: SyncData, db=Depends(get_db)):
                 if existing:
                     await conn.execute('''
                         UPDATE activities SET 
-                            date = $1, activity = $2, user = $3, details = $4
+                            date = $1, activity = $2, "user" = $3, details = $4
                         WHERE id = $5
                     ''', activity.date, activity.activity, activity.user, activity.details, activity.id)
                 else:
                     await conn.execute('''
                         INSERT INTO activities (
-                            id, date, activity, user, details
+                            id, date, activity, "user", details
                         ) VALUES ($1, $2, $3, $4, $5)
                     ''', activity.id, activity.date, activity.activity, activity.user, activity.details)
                 result.activities.append(activity)
