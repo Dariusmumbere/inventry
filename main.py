@@ -8,6 +8,7 @@ import os
 from dotenv import load_dotenv
 import logging
 import json
+from fastapi.encoders import jsonable_encoder
 
 # Load environment variables
 load_dotenv()
@@ -348,7 +349,14 @@ def record_to_settings(record) -> Settings:
 @app.post("/sync", response_model=SyncData)
 async def sync(data: SyncData, db=Depends(get_db)):
     try:
+        # Convert the incoming data to JSON-serializable format
         server_time = datetime.utcnow()
+        result_data = jsonable_encoder(data)
+        
+        logger.info(f"Received sync data with {len(result_data.get('products', []))} products, "
+                    f"{len(result_data.get('categories', []))} categories, "
+                    f"{len(result_data.get('sales', []))} sales")
+        
         result = SyncData(last_sync_time=server_time)
         
         async with db.acquire() as conn:
@@ -535,13 +543,27 @@ async def sync(data: SyncData, db=Depends(get_db)):
             if settings:
                 result.settings = record_to_settings(settings)
             
+        logger.info(f"Sync completed successfully. Returning {len(result.products)} products, "
+                   f"{len(result.categories)} categories, {len(result.sales)} sales")
+        
         return result
     
     except Exception as e:
-        logger.error(f"Sync error: {str(e)}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        logger.error(f"Sync error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail=str(e)
+        )
 
 # Health check endpoint
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.utcnow()}
+
+# New endpoint to get sync status
+@app.get("/sync/status")
+async def sync_status():
+    return {
+        "last_sync_time": datetime.utcnow(),
+        "status": "ready"
+    }
