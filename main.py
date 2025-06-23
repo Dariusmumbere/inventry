@@ -7,6 +7,7 @@ import asyncpg
 import os
 from dotenv import load_dotenv
 import logging
+import json
 
 # Load environment variables
 load_dotenv()
@@ -24,14 +25,14 @@ app = FastAPI(
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://dariusmumbere.github.io"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Database connection pool
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://inventory_ihpg_user:EKkxYBPqllVfkTkIDKYRzGZKDX5Vw2ek@dpg-d16jkimmcj7s73c7li80-a/inventory_ihpg")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost/inventory")
 pool = None
 
 async def get_db():
@@ -106,13 +107,13 @@ class Adjustment(BaseModel):
     type: str  # 'add' or 'remove'
     quantity: int
     reason: str
-    username: Optional[str] = None  # Changed from 'user' to 'username'
+    user: Optional[str] = None
 
 class Activity(BaseModel):
     id: int
     date: datetime
     activity: str
-    username: str  # Changed from 'user' to 'username'
+    user: str
     details: str
 
 class Settings(BaseModel):
@@ -207,7 +208,7 @@ async def init_db():
                 type TEXT NOT NULL,
                 quantity INTEGER NOT NULL,
                 reason TEXT NOT NULL,
-                username TEXT
+                user TEXT
             )
         ''')
         
@@ -216,7 +217,7 @@ async def init_db():
                 id SERIAL PRIMARY KEY,
                 date TIMESTAMP NOT NULL,
                 activity TEXT NOT NULL,
-                username TEXT NOT NULL,
+                user TEXT NOT NULL,
                 details TEXT NOT NULL
             )
         ''')
@@ -253,6 +254,95 @@ async def shutdown():
     if pool:
         await pool.close()
         logger.info("Database connection pool closed")
+
+# Helper functions for data conversion
+def record_to_product(record) -> Product:
+    return Product(
+        id=record['id'],
+        name=record['name'],
+        category_id=record['category_id'],
+        description=record['description'],
+        purchase_price=record['purchase_price'],
+        selling_price=record['selling_price'],
+        stock=record['stock'],
+        reorder_level=record['reorder_level'],
+        unit=record['unit'],
+        barcode=record['barcode'],
+        created_at=record['created_at']
+    )
+
+def record_to_category(record) -> Category:
+    return Category(
+        id=record['id'],
+        name=record['name'],
+        description=record['description']
+    )
+
+def record_to_supplier(record) -> Supplier:
+    return Supplier(
+        id=record['id'],
+        name=record['name'],
+        contact_person=record['contact_person'],
+        phone=record['phone'],
+        email=record['email'],
+        address=record['address'],
+        products=record['products'],
+        payment_terms=record['payment_terms']
+    )
+
+def record_to_sale(record) -> Sale:
+    items = [SaleItem(**item) for item in record['items']]
+    return Sale(
+        id=record['id'],
+        date=record['date'],
+        invoice_number=record['invoice_number'],
+        customer=record['customer'],
+        items=items,
+        payment_method=record['payment_method'],
+        notes=record['notes']
+    )
+
+def record_to_purchase(record) -> Purchase:
+    items = [PurchaseItem(**item) for item in record['items']]
+    return Purchase(
+        id=record['id'],
+        date=record['date'],
+        reference_number=record['reference_number'],
+        supplier_id=record['supplier_id'],
+        items=items,
+        payment_method=record['payment_method'],
+        notes=record['notes']
+    )
+
+def record_to_adjustment(record) -> Adjustment:
+    return Adjustment(
+        id=record['id'],
+        date=record['date'],
+        product_id=record['product_id'],
+        type=record['type'],
+        quantity=record['quantity'],
+        reason=record['reason'],
+        user=record['user']
+    )
+
+def record_to_activity(record) -> Activity:
+    return Activity(
+        id=record['id'],
+        date=record['date'],
+        activity=record['activity'],
+        user=record['user'],
+        details=record['details']
+    )
+
+def record_to_settings(record) -> Settings:
+    return Settings(
+        business_name=record['business_name'],
+        currency=record['currency'],
+        tax_rate=record['tax_rate'],
+        low_stock_threshold=record['low_stock_threshold'],
+        invoice_prefix=record['invoice_prefix'],
+        purchase_prefix=record['purchase_prefix']
+    )
 
 # Sync endpoint
 @app.post("/sync", response_model=SyncData)
@@ -333,7 +423,8 @@ async def sync(data: SyncData, db=Depends(get_db)):
                             items = $4, payment_method = $5, notes = $6
                         WHERE id = $7
                     ''', sale.date, sale.invoice_number, sale.customer,
-                        sale.items, sale.payment_method, sale.notes, sale.id)
+                        json.dumps([item.dict() for item in sale.items]), 
+                        sale.payment_method, sale.notes, sale.id)
                 else:
                     await conn.execute('''
                         INSERT INTO sales (
@@ -341,7 +432,8 @@ async def sync(data: SyncData, db=Depends(get_db)):
                             payment_method, notes
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7)
                     ''', sale.id, sale.date, sale.invoice_number, sale.customer,
-                        sale.items, sale.payment_method, sale.notes)
+                        json.dumps([item.dict() for item in sale.items]), 
+                        sale.payment_method, sale.notes)
                 result.sales.append(sale)
             
             # Process purchases
@@ -354,7 +446,8 @@ async def sync(data: SyncData, db=Depends(get_db)):
                             items = $4, payment_method = $5, notes = $6
                         WHERE id = $7
                     ''', purchase.date, purchase.reference_number, purchase.supplier_id,
-                        purchase.items, purchase.payment_method, purchase.notes, purchase.id)
+                        json.dumps([item.dict() for item in purchase.items]), 
+                        purchase.payment_method, purchase.notes, purchase.id)
                 else:
                     await conn.execute('''
                         INSERT INTO purchases (
@@ -362,7 +455,8 @@ async def sync(data: SyncData, db=Depends(get_db)):
                             payment_method, notes
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7)
                     ''', purchase.id, purchase.date, purchase.reference_number, purchase.supplier_id,
-                        purchase.items, purchase.payment_method, purchase.notes)
+                        json.dumps([item.dict() for item in purchase.items]), 
+                        purchase.payment_method, purchase.notes)
                 result.purchases.append(purchase)
             
             # Process adjustments
@@ -372,18 +466,18 @@ async def sync(data: SyncData, db=Depends(get_db)):
                     await conn.execute('''
                         UPDATE adjustments SET 
                             date = $1, product_id = $2, type = $3,
-                            quantity = $4, reason = $5, username = $6
+                            quantity = $4, reason = $5, user = $6
                         WHERE id = $7
                     ''', adjustment.date, adjustment.product_id, adjustment.type,
-                        adjustment.quantity, adjustment.reason, adjustment.username, adjustment.id)
+                        adjustment.quantity, adjustment.reason, adjustment.user, adjustment.id)
                 else:
                     await conn.execute('''
                         INSERT INTO adjustments (
                             id, date, product_id, type, quantity,
-                            reason, username
+                            reason, user
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7)
                     ''', adjustment.id, adjustment.date, adjustment.product_id, adjustment.type,
-                        adjustment.quantity, adjustment.reason, adjustment.username)
+                        adjustment.quantity, adjustment.reason, adjustment.user)
                 result.adjustments.append(adjustment)
             
             # Process activities
@@ -392,15 +486,15 @@ async def sync(data: SyncData, db=Depends(get_db)):
                 if existing:
                     await conn.execute('''
                         UPDATE activities SET 
-                            date = $1, activity = $2, username = $3, details = $4
+                            date = $1, activity = $2, user = $3, details = $4
                         WHERE id = $5
-                    ''', activity.date, activity.activity, activity.username, activity.details, activity.id)
+                    ''', activity.date, activity.activity, activity.user, activity.details, activity.id)
                 else:
                     await conn.execute('''
                         INSERT INTO activities (
-                            id, date, activity, username, details
+                            id, date, activity, user, details
                         ) VALUES ($1, $2, $3, $4, $5)
-                    ''', activity.id, activity.date, activity.activity, activity.username, activity.details)
+                    ''', activity.id, activity.date, activity.activity, activity.user, activity.details)
                 result.activities.append(activity)
             
             # Process settings
@@ -416,16 +510,30 @@ async def sync(data: SyncData, db=Depends(get_db)):
                 result.settings = data.settings
             
             # Get all data from server to send back to client
-            result.products = await conn.fetch('SELECT * FROM products')
-            result.categories = await conn.fetch('SELECT * FROM categories')
-            result.suppliers = await conn.fetch('SELECT * FROM suppliers')
-            result.sales = await conn.fetch('SELECT * FROM sales')
-            result.purchases = await conn.fetch('SELECT * FROM purchases')
-            result.adjustments = await conn.fetch('SELECT * FROM adjustments')
-            result.activities = await conn.fetch('SELECT * FROM activities')
+            products = await conn.fetch('SELECT * FROM products')
+            result.products = [record_to_product(p) for p in products]
+            
+            categories = await conn.fetch('SELECT * FROM categories')
+            result.categories = [record_to_category(c) for c in categories]
+            
+            suppliers = await conn.fetch('SELECT * FROM suppliers')
+            result.suppliers = [record_to_supplier(s) for s in suppliers]
+            
+            sales = await conn.fetch('SELECT * FROM sales')
+            result.sales = [record_to_sale(s) for s in sales]
+            
+            purchases = await conn.fetch('SELECT * FROM purchases')
+            result.purchases = [record_to_purchase(p) for p in purchases]
+            
+            adjustments = await conn.fetch('SELECT * FROM adjustments')
+            result.adjustments = [record_to_adjustment(a) for a in adjustments]
+            
+            activities = await conn.fetch('SELECT * FROM activities')
+            result.activities = [record_to_activity(a) for a in activities]
+            
             settings = await conn.fetchrow('SELECT * FROM settings LIMIT 1')
             if settings:
-                result.settings = settings
+                result.settings = record_to_settings(settings)
             
         return result
     
@@ -437,7 +545,3 @@ async def sync(data: SyncData, db=Depends(get_db)):
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.utcnow()}
-
-@app.get("/")
-async def root():
-    return {"message": "StockMaster UG Inventory API"}
