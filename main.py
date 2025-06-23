@@ -170,6 +170,19 @@ class SyncData(BaseModel):
 async def init_db():
     pool = await get_db()
     async with pool.acquire() as conn:
+        # First, check if the activities table exists and has the correct columns
+        table_exists = await conn.fetchval(
+            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'activities')"
+        )
+        
+        if table_exists:
+            # Check if the user column exists
+            column_exists = await conn.fetchval(
+                "SELECT EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'activities' AND column_name = 'user')"
+            )
+            if not column_exists:
+                await conn.execute('ALTER TABLE activities ADD COLUMN "user" TEXT NOT NULL')
+        
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS products (
                 id SERIAL PRIMARY KEY,
@@ -550,11 +563,20 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
                         WHERE id = $5
                     ''', activity_date, activity.activity, activity.user, activity.details, activity.id)
                 else:
-                    await conn.execute('''
-                        INSERT INTO activities (
-                            id, date, activity, "user", details
-                        ) VALUES ($1, $2, $3, $4, $5)
-                    ''', activity.id, activity_date, activity.activity, activity.user, activity.details)
+                    try:
+                        await conn.execute('''
+                            INSERT INTO activities (
+                                id, date, activity, "user", details
+                            ) VALUES ($1, $2, $3, $4, $5)
+                        ''', activity.id, activity_date, activity.activity, activity.user, activity.details)
+                    except asyncpg.UndefinedColumnError:
+                        # If the column doesn't exist, add it and try again
+                        await conn.execute('ALTER TABLE activities ADD COLUMN "user" TEXT NOT NULL DEFAULT \'unknown\'')
+                        await conn.execute('''
+                            INSERT INTO activities (
+                                id, date, activity, "user", details
+                            ) VALUES ($1, $2, $3, $4, $5)
+                        ''', activity.id, activity_date, activity.activity, activity.user, activity.details)
                 result.activities.append(activity)
             
             # Process settings
