@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import asyncpg
 import os
 from dotenv import load_dotenv
@@ -375,6 +375,13 @@ def record_to_settings(record) -> Settings:
         purchase_prefix=record['purchase_prefix']
     )
 
+def ensure_timezone_aware(dt: Optional[datetime]) -> Optional[datetime]:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
 # Improved Sync endpoint with better error handling and timezone awareness
 @app.post("/sync", response_model=SyncData)
 async def sync(data: Dict[str, Any], db=Depends(get_db)):
@@ -393,9 +400,7 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
             # Process products
             for product in sync_data.products:
                 # Ensure created_at is timezone aware
-                created_at = product.created_at
-                if created_at and not created_at.tzinfo:
-                    created_at = created_at.replace(tzinfo=timezone.utc)
+                created_at = ensure_timezone_aware(product.created_at)
                 
                 existing = await conn.fetchrow('SELECT * FROM products WHERE id = $1', product.id)
                 if existing:
@@ -459,9 +464,7 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
             # Process sales
             for sale in sync_data.sales:
                 # Ensure date is timezone aware
-                sale_date = sale.date
-                if sale_date and not sale_date.tzinfo:
-                    sale_date = sale_date.replace(tzinfo=timezone.utc)
+                sale_date = ensure_timezone_aware(sale.date)
                 
                 existing = await conn.fetchrow('SELECT * FROM sales WHERE id = $1', sale.id)
                 if existing:
@@ -487,9 +490,7 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
             # Process purchases
             for purchase in sync_data.purchases:
                 # Ensure date is timezone aware
-                purchase_date = purchase.date
-                if purchase_date and not purchase_date.tzinfo:
-                    purchase_date = purchase_date.replace(tzinfo=timezone.utc)
+                purchase_date = ensure_timezone_aware(purchase.date)
                 
                 existing = await conn.fetchrow('SELECT * FROM purchases WHERE id = $1', purchase.id)
                 if existing:
@@ -515,9 +516,7 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
             # Process adjustments
             for adjustment in sync_data.adjustments:
                 # Ensure date is timezone aware
-                adj_date = adjustment.date
-                if adj_date and not adj_date.tzinfo:
-                    adj_date = adj_date.replace(tzinfo=timezone.utc)
+                adj_date = ensure_timezone_aware(adjustment.date)
                 
                 existing = await conn.fetchrow('SELECT * FROM adjustments WHERE id = $1', adjustment.id)
                 if existing:
@@ -541,9 +540,7 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
             # Process activities
             for activity in sync_data.activities:
                 # Ensure date is timezone aware
-                activity_date = activity.date
-                if activity_date and not activity_date.tzinfo:
-                    activity_date = activity_date.replace(tzinfo=timezone.utc)
+                activity_date = ensure_timezone_aware(activity.date)
                 
                 existing = await conn.fetchrow('SELECT * FROM activities WHERE id = $1', activity.id)
                 if existing:
