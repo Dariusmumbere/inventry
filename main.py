@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
-from datetime import datetime  # Removed timezone imports
+from datetime import datetime, timezone
 import asyncpg
 import os
 from dotenv import load_dotenv
@@ -42,7 +42,15 @@ async def get_db():
         pool = await asyncpg.create_pool(DATABASE_URL)
     return pool
 
-# Models (updated to remove timezone awareness)
+# Helper function to ensure timezone-naive datetimes
+def make_timezone_naive(dt: Optional[datetime]) -> Optional[datetime]:
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.replace(tzinfo=None)
+    return dt
+
+# Models with proper datetime handling
 class Product(BaseModel):
     id: int
     name: str
@@ -55,6 +63,11 @@ class Product(BaseModel):
     unit: str
     barcode: Optional[str] = None
     created_at: Optional[datetime] = None
+
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }
 
 class Category(BaseModel):
     id: int
@@ -86,6 +99,11 @@ class Sale(BaseModel):
     payment_method: str
     notes: Optional[str] = None
 
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }
+
 class PurchaseItem(BaseModel):
     product_id: int
     product_name: str
@@ -101,6 +119,11 @@ class Purchase(BaseModel):
     payment_method: str
     notes: Optional[str] = None
 
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }
+
 class Adjustment(BaseModel):
     id: int
     date: datetime
@@ -110,12 +133,22 @@ class Adjustment(BaseModel):
     reason: str
     user: Optional[str] = None
 
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }
+
 class Activity(BaseModel):
     id: int
     date: datetime
     activity: str
     user: str
     details: str
+
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }
 
 class Settings(BaseModel):
     business_name: str
@@ -136,7 +169,12 @@ class SyncData(BaseModel):
     activities: List[Activity] = []
     settings: Optional[Settings] = None
 
-# Database initialization (updated to use TIMESTAMP WITHOUT TIME ZONE)
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }
+
+# Database initialization with proper timestamp handling
 async def init_db():
     pool = await get_db()
     async with pool.acquire() as conn:
@@ -151,7 +189,7 @@ async def init_db():
                 "SELECT EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'activities' AND column_name = 'user')"
             )
             if not column_exists:
-                await conn.execute('ALTER TABLE activities ADD COLUMN "user" TEXT NOT NULL')
+                await conn.execute('ALTER TABLE activities ADD COLUMN "user" TEXT NOT NULL DEFAULT \'system\'')
         
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS products (
@@ -269,7 +307,7 @@ async def shutdown():
         await pool.close()
         logger.info("Database connection pool closed")
 
-# Helper functions for data conversion
+# Helper functions for data conversion with proper datetime handling
 def record_to_product(record) -> Product:
     return Product(
         id=record['id'],
@@ -282,7 +320,7 @@ def record_to_product(record) -> Product:
         reorder_level=record['reorder_level'],
         unit=record['unit'],
         barcode=record['barcode'],
-        created_at=record['created_at']
+        created_at=make_timezone_naive(record['created_at'])
     )
 
 def record_to_category(record) -> Category:
@@ -308,7 +346,7 @@ def record_to_sale(record) -> Sale:
     items = [SaleItem(**item) for item in record['items']]
     return Sale(
         id=record['id'],
-        date=record['date'],
+        date=make_timezone_naive(record['date']),
         invoice_number=record['invoice_number'],
         customer=record['customer'],
         items=items,
@@ -320,7 +358,7 @@ def record_to_purchase(record) -> Purchase:
     items = [PurchaseItem(**item) for item in record['items']]
     return Purchase(
         id=record['id'],
-        date=record['date'],
+        date=make_timezone_naive(record['date']),
         reference_number=record['reference_number'],
         supplier_id=record['supplier_id'],
         items=items,
@@ -331,7 +369,7 @@ def record_to_purchase(record) -> Purchase:
 def record_to_adjustment(record) -> Adjustment:
     return Adjustment(
         id=record['id'],
-        date=record['date'],
+        date=make_timezone_naive(record['date']),
         product_id=record['product_id'],
         type=record['type'],
         quantity=record['quantity'],
@@ -342,7 +380,7 @@ def record_to_adjustment(record) -> Adjustment:
 def record_to_activity(record) -> Activity:
     return Activity(
         id=record['id'],
-        date=record['date'],
+        date=make_timezone_naive(record['date']),
         activity=record['activity'],
         user=record['user'],
         details=record['details']
@@ -358,13 +396,13 @@ def record_to_settings(record) -> Settings:
         purchase_prefix=record['purchase_prefix']
     )
 
-# Sync endpoint with timezone-naive datetimes
+# Sync endpoint with proper datetime handling
 @app.post("/sync", response_model=SyncData)
 async def sync(data: Dict[str, Any], db=Depends(get_db)):
     try:
-        # Validate and parse the incoming data
+        # Validate and parse the incoming data with proper datetime handling
         sync_data = SyncData(**data)
-        server_time = datetime.now()  # Timezone-naive datetime
+        server_time = datetime.now(timezone.utc).replace(tzinfo=None)  # Timezone-naive datetime
         
         logger.info(f"Received sync data with {len(sync_data.products)} products, "
                    f"{len(sync_data.categories)} categories, "
@@ -394,7 +432,8 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                     ''', product.id, product.name, product.category_id, product.description,
                         product.purchase_price, product.selling_price, product.stock,
-                        product.reorder_level, product.unit, product.barcode, product.created_at or server_time)
+                        product.reorder_level, product.unit, product.barcode, 
+                        make_timezone_naive(product.created_at) or server_time)
                 result.products.append(product)
             
             # Process categories
@@ -443,7 +482,7 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
                             date = $1, invoice_number = $2, customer = $3,
                             items = $4::jsonb, payment_method = $5, notes = $6
                         WHERE id = $7
-                    ''', sale.date, sale.invoice_number, sale.customer,
+                    ''', make_timezone_naive(sale.date), sale.invoice_number, sale.customer,
                         json.dumps([item.dict() for item in sale.items]), 
                         sale.payment_method, sale.notes, sale.id)
                 else:
@@ -452,7 +491,7 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
                             id, date, invoice_number, customer, items,
                             payment_method, notes
                         ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
-                    ''', sale.id, sale.date, sale.invoice_number, sale.customer,
+                    ''', sale.id, make_timezone_naive(sale.date), sale.invoice_number, sale.customer,
                         json.dumps([item.dict() for item in sale.items]), 
                         sale.payment_method, sale.notes)
                 result.sales.append(sale)
@@ -466,7 +505,7 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
                             date = $1, reference_number = $2, supplier_id = $3,
                             items = $4::jsonb, payment_method = $5, notes = $6
                         WHERE id = $7
-                    ''', purchase.date, purchase.reference_number, purchase.supplier_id,
+                    ''', make_timezone_naive(purchase.date), purchase.reference_number, purchase.supplier_id,
                         json.dumps([item.dict() for item in purchase.items]), 
                         purchase.payment_method, purchase.notes, purchase.id)
                 else:
@@ -475,7 +514,7 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
                             id, date, reference_number, supplier_id, items,
                             payment_method, notes
                         ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
-                    ''', purchase.id, purchase.date, purchase.reference_number, purchase.supplier_id,
+                    ''', purchase.id, make_timezone_naive(purchase.date), purchase.reference_number, purchase.supplier_id,
                         json.dumps([item.dict() for item in purchase.items]), 
                         purchase.payment_method, purchase.notes)
                 result.purchases.append(purchase)
@@ -489,7 +528,7 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
                             date = $1, product_id = $2, type = $3,
                             quantity = $4, reason = $5, "user" = $6
                         WHERE id = $7
-                    ''', adjustment.date, adjustment.product_id, adjustment.type,
+                    ''', make_timezone_naive(adjustment.date), adjustment.product_id, adjustment.type,
                         adjustment.quantity, adjustment.reason, adjustment.user, adjustment.id)
                 else:
                     await conn.execute('''
@@ -497,7 +536,7 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
                             id, date, product_id, type, quantity,
                             reason, "user"
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    ''', adjustment.id, adjustment.date, adjustment.product_id, adjustment.type,
+                    ''', adjustment.id, make_timezone_naive(adjustment.date), adjustment.product_id, adjustment.type,
                         adjustment.quantity, adjustment.reason, adjustment.user)
                 result.adjustments.append(adjustment)
             
@@ -509,22 +548,22 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
                         UPDATE activities SET 
                             date = $1, activity = $2, "user" = $3, details = $4
                         WHERE id = $5
-                    ''', activity.date, activity.activity, activity.user, activity.details, activity.id)
+                    ''', make_timezone_naive(activity.date), activity.activity, activity.user, activity.details, activity.id)
                 else:
                     try:
                         await conn.execute('''
                             INSERT INTO activities (
                                 id, date, activity, "user", details
                             ) VALUES ($1, $2, $3, $4, $5)
-                        ''', activity.id, activity.date, activity.activity, activity.user, activity.details)
+                        ''', activity.id, make_timezone_naive(activity.date), activity.activity, activity.user, activity.details)
                     except asyncpg.UndefinedColumnError:
                         # If the column doesn't exist, add it and try again
-                        await conn.execute('ALTER TABLE activities ADD COLUMN "user" TEXT NOT NULL DEFAULT \'unknown\'')
+                        await conn.execute('ALTER TABLE activities ADD COLUMN "user" TEXT NOT NULL DEFAULT \'system\'')
                         await conn.execute('''
                             INSERT INTO activities (
                                 id, date, activity, "user", details
                             ) VALUES ($1, $2, $3, $4, $5)
-                        ''', activity.id, activity.date, activity.activity, activity.user, activity.details)
+                        ''', activity.id, make_timezone_naive(activity.date), activity.activity, activity.user, activity.details)
                 result.activities.append(activity)
             
             # Process settings
@@ -540,25 +579,25 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
                 result.settings = sync_data.settings
             
             # Get all data from server to send back to client
-            product_records = await conn.fetch('SELECT * FROM products')
+            product_records = await conn.fetch('SELECT * FROM products ORDER BY id')
             result.products = [record_to_product(p) for p in product_records]
             
-            category_records = await conn.fetch('SELECT * FROM categories')
+            category_records = await conn.fetch('SELECT * FROM categories ORDER BY id')
             result.categories = [record_to_category(c) for c in category_records]
             
-            supplier_records = await conn.fetch('SELECT * FROM suppliers')
+            supplier_records = await conn.fetch('SELECT * FROM suppliers ORDER BY id')
             result.suppliers = [record_to_supplier(s) for s in supplier_records]
             
-            sale_records = await conn.fetch('SELECT * FROM sales')
+            sale_records = await conn.fetch('SELECT * FROM sales ORDER BY id')
             result.sales = [record_to_sale(s) for s in sale_records]
             
-            purchase_records = await conn.fetch('SELECT * FROM purchases')
+            purchase_records = await conn.fetch('SELECT * FROM purchases ORDER BY id')
             result.purchases = [record_to_purchase(p) for p in purchase_records]
             
-            adjustment_records = await conn.fetch('SELECT * FROM adjustments')
+            adjustment_records = await conn.fetch('SELECT * FROM adjustments ORDER BY id')
             result.adjustments = [record_to_adjustment(a) for a in adjustment_records]
             
-            activity_records = await conn.fetch('SELECT * FROM activities')
+            activity_records = await conn.fetch('SELECT * FROM activities ORDER BY id')
             result.activities = [record_to_activity(a) for a in activity_records]
             
             settings_record = await conn.fetchrow('SELECT * FROM settings LIMIT 1')
@@ -580,13 +619,13 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
 # Health check endpoint
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 # Sync status endpoint
 @app.get("/sync/status")
 async def sync_status():
     return {
         "status": "ready",
-        "last_sync_time": datetime.now().isoformat(),
+        "last_sync_time": datetime.now(timezone.utc).isoformat(),
         "message": "Sync service is operational"
     }
