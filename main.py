@@ -131,7 +131,7 @@ class Adjustment(BaseModel):
     type: str  # 'add' or 'remove'
     quantity: int
     reason: str
-    username: Optional[str] = "system"
+    username: str = "system"
 
     class Config:
         json_encoders = {
@@ -142,7 +142,7 @@ class Activity(BaseModel):
     id: int
     date: datetime
     activity: str
-    username: str = "system"  # Changed from Optional to required with default
+    username: str = "system"  # Changed to required field with default
     details: str
 
     class Config:
@@ -547,14 +547,14 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
                         UPDATE activities SET 
                             date = $1, activity = $2, username = $3, details = $4
                         WHERE id = $5
-                    ''', make_timezone_naive(activity.date), activity.activity, activity.username or "system", activity.details, activity.id)
+                    ''', make_timezone_naive(activity.date), activity.activity, activity.username, activity.details, activity.id)
                 else:
                     try:
                         await conn.execute('''
                             INSERT INTO activities (
                                 id, date, activity, username, details
                             ) VALUES ($1, $2, $3, $4, $5)
-                        ''', activity.id, make_timezone_naive(activity.date), activity.activity, activity.username or "system", activity.details)
+                        ''', activity.id, make_timezone_naive(activity.date), activity.activity, activity.username, activity.details)
                     except asyncpg.UndefinedColumnError:
                         # If the column doesn't exist, add it and try again
                         await conn.execute('ALTER TABLE activities ADD COLUMN username TEXT NOT NULL DEFAULT \'system\'')
@@ -562,7 +562,7 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
                             INSERT INTO activities (
                                 id, date, activity, username, details
                             ) VALUES ($1, $2, $3, $4, $5)
-                        ''', activity.id, make_timezone_naive(activity.date), activity.activity, activity.username or "system", activity.details)
+                        ''', activity.id, make_timezone_naive(activity.date), activity.activity, activity.username, activity.details)
                 result.activities.append(activity)
             
             # Process settings
