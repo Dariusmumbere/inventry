@@ -142,9 +142,9 @@ class Activity(BaseModel):
     id: int
     date: datetime
     activity: str
-    username: str = "system"  # Changed to required field with default
+    username: str = Field(default="system", alias="user")  # Accepts both
     details: str
-
+    
     class Config:
         json_encoders = {
             datetime: lambda v: v.isoformat() if v else None
