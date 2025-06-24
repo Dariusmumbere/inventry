@@ -142,7 +142,7 @@ class Activity(BaseModel):
     id: int
     date: datetime
     activity: str
-    username: str = Field(default="system", alias="user")  # Accepts both
+    username: str = Field(default="system")
     details: str
     
     class Config:
@@ -252,6 +252,7 @@ async def init_db():
             )
         ''')
         
+        # Updated activities table with proper username column
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS activities (
                 id SERIAL PRIMARY KEY,
@@ -519,27 +520,16 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
                     ''', make_timezone_naive(adjustment.date), adjustment.product_id, adjustment.type,
                         adjustment.quantity, adjustment.reason, adjustment.username or "system", adjustment.id)
                 else:
-                    try:
-                        await conn.execute('''
-                            INSERT INTO adjustments (
-                                id, date, product_id, type, quantity,
-                                reason, username
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                        ''', adjustment.id, make_timezone_naive(adjustment.date), adjustment.product_id, adjustment.type,
-                            adjustment.quantity, adjustment.reason, adjustment.username or "system")
-                    except asyncpg.UndefinedColumnError:
-                        # If the column doesn't exist, add it and try again
-                        await conn.execute('ALTER TABLE adjustments ADD COLUMN username TEXT NOT NULL DEFAULT \'system\'')
-                        await conn.execute('''
-                            INSERT INTO adjustments (
-                                id, date, product_id, type, quantity,
-                                reason, username
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                        ''', adjustment.id, make_timezone_naive(adjustment.date), adjustment.product_id, adjustment.type,
-                            adjustment.quantity, adjustment.reason, adjustment.username or "system")
+                    await conn.execute('''
+                        INSERT INTO adjustments (
+                            id, date, product_id, type, quantity,
+                            reason, username
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    ''', adjustment.id, make_timezone_naive(adjustment.date), adjustment.product_id, adjustment.type,
+                        adjustment.quantity, adjustment.reason, adjustment.username or "system")
                 result.adjustments.append(adjustment)
             
-            # Process activities - fixed to ensure username is never null
+            # Process activities with proper username handling
             for activity in sync_data.activities:
                 existing = await conn.fetchrow('SELECT * FROM activities WHERE id = $1', activity.id)
                 if existing:
@@ -547,22 +537,15 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
                         UPDATE activities SET 
                             date = $1, activity = $2, username = $3, details = $4
                         WHERE id = $5
-                    ''', make_timezone_naive(activity.date), activity.activity, activity.username, activity.details, activity.id)
+                    ''', make_timezone_naive(activity.date), activity.activity, 
+                        activity.username or "system", activity.details, activity.id)
                 else:
-                    try:
-                        await conn.execute('''
-                            INSERT INTO activities (
-                                id, date, activity, username, details
-                            ) VALUES ($1, $2, $3, $4, $5)
-                        ''', activity.id, make_timezone_naive(activity.date), activity.activity, activity.username, activity.details)
-                    except asyncpg.UndefinedColumnError:
-                        # If the column doesn't exist, add it and try again
-                        await conn.execute('ALTER TABLE activities ADD COLUMN username TEXT NOT NULL DEFAULT \'system\'')
-                        await conn.execute('''
-                            INSERT INTO activities (
-                                id, date, activity, username, details
-                            ) VALUES ($1, $2, $3, $4, $5)
-                        ''', activity.id, make_timezone_naive(activity.date), activity.activity, activity.username, activity.details)
+                    await conn.execute('''
+                        INSERT INTO activities (
+                            id, date, activity, username, details
+                        ) VALUES ($1, $2, $3, $4, $5)
+                    ''', activity.id, make_timezone_naive(activity.date), activity.activity, 
+                        activity.username or "system", activity.details)
                 result.activities.append(activity)
             
             # Process settings
