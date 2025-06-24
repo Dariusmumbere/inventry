@@ -142,7 +142,7 @@ class Activity(BaseModel):
     id: int
     date: datetime
     activity: str
-    username: str = Field(default="system")
+    username: str = "system"
     details: str
     
     class Config:
@@ -178,7 +178,17 @@ class SyncData(BaseModel):
 async def init_db():
     pool = await get_db()
     async with pool.acquire() as conn:
-        # Check and create tables with all required columns
+        # Drop tables if they exist (for clean slate)
+        await conn.execute('DROP TABLE IF EXISTS activities CASCADE')
+        await conn.execute('DROP TABLE IF EXISTS adjustments CASCADE')
+        await conn.execute('DROP TABLE IF EXISTS purchases CASCADE')
+        await conn.execute('DROP TABLE IF EXISTS sales CASCADE')
+        await conn.execute('DROP TABLE IF EXISTS suppliers CASCADE')
+        await conn.execute('DROP TABLE IF EXISTS categories CASCADE')
+        await conn.execute('DROP TABLE IF EXISTS products CASCADE')
+        await conn.execute('DROP TABLE IF EXISTS settings CASCADE')
+
+        # Create tables with all required columns
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS products (
                 id SERIAL PRIMARY KEY,
@@ -252,7 +262,6 @@ async def init_db():
             )
         ''')
         
-        # Updated activities table with proper username column
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS activities (
                 id SERIAL PRIMARY KEY,
@@ -529,7 +538,7 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
                         adjustment.quantity, adjustment.reason, adjustment.username or "system")
                 result.adjustments.append(adjustment)
             
-            # Process activities with proper username handling
+            # Process activities - fixed to ensure username is never null
             for activity in sync_data.activities:
                 existing = await conn.fetchrow('SELECT * FROM activities WHERE id = $1', activity.id)
                 if existing:
@@ -537,15 +546,13 @@ async def sync(data: Dict[str, Any], db=Depends(get_db)):
                         UPDATE activities SET 
                             date = $1, activity = $2, username = $3, details = $4
                         WHERE id = $5
-                    ''', make_timezone_naive(activity.date), activity.activity, 
-                        activity.username or "system", activity.details, activity.id)
+                    ''', make_timezone_naive(activity.date), activity.activity, activity.username or "system", activity.details, activity.id)
                 else:
                     await conn.execute('''
                         INSERT INTO activities (
                             id, date, activity, username, details
                         ) VALUES ($1, $2, $3, $4, $5)
-                    ''', activity.id, make_timezone_naive(activity.date), activity.activity, 
-                        activity.username or "system", activity.details)
+                    ''', activity.id, make_timezone_naive(activity.date), activity.activity, activity.username or "system", activity.details)
                 result.activities.append(activity)
             
             # Process settings
