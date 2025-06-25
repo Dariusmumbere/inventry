@@ -482,8 +482,8 @@ async def login_for_access_token(
         httponly=True,
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         secure=True,  # Important for production
-        samesite="lax",
-        domain=".dariusmumbere.github.io"  # Important for GitHub Pages
+        samesite="none",
+        domain="dariusmumbere.github.io"  # Important for GitHub Pages
     )
     
     return {
