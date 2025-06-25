@@ -3,3 +3,6 @@ uvicorn
 asyncpg
 python-dotenv
 pydantic
+python-jose[cryptography]
+passlib 
+bcrypt 
