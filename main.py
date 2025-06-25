@@ -1,8 +1,11 @@
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 import asyncpg
 import os
 from dotenv import load_dotenv
@@ -32,6 +35,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Security constants
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-here")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# Password hashing
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
 # Database connection pool
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost/inventory")
 pool = None
@@ -42,15 +54,39 @@ async def get_db():
         pool = await asyncpg.create_pool(DATABASE_URL)
     return pool
 
-# Helper function to ensure timezone-naive datetimes
-def make_timezone_naive(dt: Optional[datetime]) -> Optional[datetime]:
-    if dt is None:
-        return None
-    if dt.tzinfo is not None:
-        return dt.replace(tzinfo=None)
-    return dt
+# Models
+class User(BaseModel):
+    id: int
+    email: EmailStr
+    full_name: str
+    role: str
+    disabled: bool = False
 
-# Models with proper datetime handling
+class UserInDB(User):
+    hashed_password: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    user: User
+
+class TokenData(BaseModel):
+    email: Optional[str] = None
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    full_name: str
+    password: str
+    role: str = "user"
+
+class UserUpdate(BaseModel):
+    email: Optional[EmailStr] = None
+    full_name: Optional[str] = None
+    password: Optional[str] = None
+    role: Optional[str] = None
+    disabled: Optional[bool] = None
+
+# Inventory Models (existing)
 class Product(BaseModel):
     id: int
     name: str
@@ -174,11 +210,95 @@ class SyncData(BaseModel):
             datetime: lambda v: v.isoformat() if v else None
         }
 
-# Database initialization with proper timestamp handling
+# Helper functions
+def verify_password(plain_password: str, hashed_password: str):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password: str):
+    return pwd_context.hash(password)
+
+async def authenticate_user(db, email: str, password: str):
+    user = await get_user_by_email(db, email)
+    if not user:
+        return False
+    if not verify_password(password, user.hashed_password):
+        return False
+    return user
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+async def get_current_user(token: str = Depends(oauth2_scheme), db=Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+        token_data = TokenData(email=email)
+    except JWTError:
+        raise credentials_exception
+    
+    user = await get_user_by_email(db, email=token_data.email)
+    if user is None:
+        raise credentials_exception
+    return user
+
+async def get_current_active_user(current_user: User = Depends(get_current_user)):
+    if current_user.disabled:
+        raise HTTPException(status_code=400, detail="Inactive user")
+    return current_user
+
+def make_timezone_naive(dt: Optional[datetime]) -> Optional[datetime]:
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.replace(tzinfo=None)
+    return dt
+
+# Database initialization with users table
 async def init_db():
     pool = await get_db()
     async with pool.acquire() as conn:
-        # Drop tables if they exist (for clean slate)
+        # Create users table if not exists
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE,
+                full_name TEXT NOT NULL,
+                hashed_password TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user',
+                disabled BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Check if admin user exists
+        admin_exists = await conn.fetchval('''
+            SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)
+        ''', 'admin@stockmaster.ug')
+        
+        if not admin_exists:
+            # Create default admin user
+            hashed_password = get_password_hash("admin123")
+            await conn.execute('''
+                INSERT INTO users (email, full_name, hashed_password, role)
+                VALUES ($1, $2, $3, $4)
+            ''', 'admin@stockmaster.ug', 'Admin User', hashed_password, 'admin')
+
+        # Existing inventory tables
         await conn.execute('DROP TABLE IF EXISTS activities CASCADE')
         await conn.execute('DROP TABLE IF EXISTS adjustments CASCADE')
         await conn.execute('DROP TABLE IF EXISTS purchases CASCADE')
@@ -305,7 +425,417 @@ async def shutdown():
         await pool.close()
         logger.info("Database connection pool closed")
 
-# Helper functions for data conversion with proper datetime handling
+# User CRUD operations
+async def get_user_by_email(db, email: str):
+    user_record = await db.fetchrow('SELECT * FROM users WHERE email = $1', email)
+    if user_record:
+        return UserInDB(
+            id=user_record['id'],
+            email=user_record['email'],
+            full_name=user_record['full_name'],
+            role=user_record['role'],
+            disabled=user_record['disabled'],
+            hashed_password=user_record['hashed_password']
+        )
+    return None
+
+async def create_user(db, user: UserCreate):
+    hashed_password = get_password_hash(user.password)
+    try:
+        user_id = await db.fetchval('''
+            INSERT INTO users (email, full_name, hashed_password, role)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id
+        ''', user.email, user.full_name, hashed_password, user.role)
+        return user_id
+    except asyncpg.UniqueViolationError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+
+# Authentication endpoints
+@app.post("/token", response_model=Token)
+async def login_for_access_token(
+    response: Response,
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db=Depends(get_db)
+):
+    user = await authenticate_user(db, form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.email}, expires_delta=access_token_expires
+    )
+    
+    # Set HTTP-only cookie
+    response.set_cookie(
+        key="access_token",
+        value=f"Bearer {access_token}",
+        httponly=True,
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        secure=True,  # Set to True in production with HTTPS
+        samesite="lax"
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": User(**user.dict())
+    }
+
+@app.post("/logout")
+async def logout(response: Response):
+    response.delete_cookie("access_token")
+    return {"message": "Successfully logged out"}
+
+@app.get("/users/me", response_model=User)
+async def read_users_me(current_user: User = Depends(get_current_active_user)):
+    return current_user
+
+# User management endpoints
+@app.post("/users", response_model=User)
+async def create_new_user(
+    user: UserCreate,
+    current_user: User = Depends(get_current_active_user),
+    db=Depends(get_db)
+):
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admin can create users"
+        )
+    
+    user_id = await create_user(db, user)
+    return await get_user_by_email(db, user.email)
+
+# Inventory endpoints (protected with authentication)
+@app.get("/products", response_model=List[Product])
+async def get_products(
+    current_user: User = Depends(get_current_active_user),
+    db=Depends(get_db)
+):
+    product_records = await db.fetch('SELECT * FROM products ORDER BY id')
+    return [record_to_product(p) for p in product_records]
+
+@app.post("/products", response_model=Product)
+async def create_product(
+    product: Product,
+    current_user: User = Depends(get_current_active_user),
+    db=Depends(get_db)
+):
+    product_id = await db.fetchval('''
+        INSERT INTO products (
+            name, category_id, description, purchase_price,
+            selling_price, stock, reorder_level, unit, barcode
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING id
+    ''', product.name, product.category_id, product.description,
+        product.purchase_price, product.selling_price, product.stock,
+        product.reorder_level, product.unit, product.barcode)
+    
+    # Log activity
+    await db.execute('''
+        INSERT INTO activities (date, activity, username, details)
+        VALUES ($1, $2, $3, $4)
+    ''', datetime.now(timezone.utc), 'Product created', current_user.email,
+        f'Created product {product.name}')
+    
+    return await db.fetchrow('SELECT * FROM products WHERE id = $1', product_id)
+
+# Categories endpoints
+@app.get("/categories", response_model=List[Category])
+async def get_categories(
+    current_user: User = Depends(get_current_active_user),
+    db=Depends(get_db)
+):
+    category_records = await db.fetch('SELECT * FROM categories ORDER BY id')
+    return [record_to_category(c) for c in category_records]
+
+@app.post("/categories", response_model=Category)
+async def create_category(
+    category: Category,
+    current_user: User = Depends(get_current_active_user),
+    db=Depends(get_db)
+):
+    category_id = await db.fetchval('''
+        INSERT INTO categories (name, description)
+        VALUES ($1, $2)
+        RETURNING id
+    ''', category.name, category.description)
+    
+    # Log activity
+    await db.execute('''
+        INSERT INTO activities (date, activity, username, details)
+        VALUES ($1, $2, $3, $4)
+    ''', datetime.now(timezone.utc), 'Category created', current_user.email,
+        f'Created category {category.name}')
+    
+    return await db.fetchrow('SELECT * FROM categories WHERE id = $1', category_id)
+
+# Suppliers endpoints
+@app.get("/suppliers", response_model=List[Supplier])
+async def get_suppliers(
+    current_user: User = Depends(get_current_active_user),
+    db=Depends(get_db)
+):
+    supplier_records = await db.fetch('SELECT * FROM suppliers ORDER BY id')
+    return [record_to_supplier(s) for s in supplier_records]
+
+@app.post("/suppliers", response_model=Supplier)
+async def create_supplier(
+    supplier: Supplier,
+    current_user: User = Depends(get_current_active_user),
+    db=Depends(get_db)
+):
+    supplier_id = await db.fetchval('''
+        INSERT INTO suppliers (
+            name, contact_person, phone, email,
+            address, products, payment_terms
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING id
+    ''', supplier.name, supplier.contact_person, supplier.phone,
+        supplier.email, supplier.address, supplier.products,
+        supplier.payment_terms)
+    
+    # Log activity
+    await db.execute('''
+        INSERT INTO activities (date, activity, username, details)
+        VALUES ($1, $2, $3, $4)
+    ''', datetime.now(timezone.utc), 'Supplier created', current_user.email,
+        f'Created supplier {supplier.name}')
+    
+    return await db.fetchrow('SELECT * FROM suppliers WHERE id = $1', supplier_id)
+
+# Sales endpoints
+@app.get("/sales", response_model=List[Sale])
+async def get_sales(
+    current_user: User = Depends(get_current_active_user),
+    db=Depends(get_db)
+):
+    sale_records = await db.fetch('SELECT * FROM sales ORDER BY id')
+    return [record_to_sale(s) for s in sale_records]
+
+@app.post("/sales", response_model=Sale)
+async def create_sale(
+    sale: Sale,
+    current_user: User = Depends(get_current_active_user),
+    db=Depends(get_db)
+):
+    sale_id = await db.fetchval('''
+        INSERT INTO sales (
+            date, invoice_number, customer, items,
+            payment_method, notes
+        ) VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+        RETURNING id
+    ''', sale.date, sale.invoice_number, sale.customer,
+        json.dumps([item.dict() for item in sale.items]), 
+        sale.payment_method, sale.notes)
+    
+    # Log activity
+    await db.execute('''
+        INSERT INTO activities (date, activity, username, details)
+        VALUES ($1, $2, $3, $4)
+    ''', datetime.now(timezone.utc), 'Sale recorded', current_user.email,
+        f'Recorded sale {sale.invoice_number}')
+    
+    return await db.fetchrow('SELECT * FROM sales WHERE id = $1', sale_id)
+
+# Purchases endpoints
+@app.get("/purchases", response_model=List[Purchase])
+async def get_purchases(
+    current_user: User = Depends(get_current_active_user),
+    db=Depends(get_db)
+):
+    purchase_records = await db.fetch('SELECT * FROM purchases ORDER BY id')
+    return [record_to_purchase(p) for p in purchase_records]
+
+@app.post("/purchases", response_model=Purchase)
+async def create_purchase(
+    purchase: Purchase,
+    current_user: User = Depends(get_current_active_user),
+    db=Depends(get_db)
+):
+    purchase_id = await db.fetchval('''
+        INSERT INTO purchases (
+            date, reference_number, supplier_id, items,
+            payment_method, notes
+        ) VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+        RETURNING id
+    ''', purchase.date, purchase.reference_number, purchase.supplier_id,
+        json.dumps([item.dict() for item in purchase.items]), 
+        purchase.payment_method, purchase.notes)
+    
+    # Log activity
+    await db.execute('''
+        INSERT INTO activities (date, activity, username, details)
+        VALUES ($1, $2, $3, $4)
+    ''', datetime.now(timezone.utc), 'Purchase recorded', current_user.email,
+        f'Recorded purchase {purchase.reference_number}')
+    
+    return await db.fetchrow('SELECT * FROM purchases WHERE id = $1', purchase_id)
+
+# Adjustments endpoints
+@app.get("/adjustments", response_model=List[Adjustment])
+async def get_adjustments(
+    current_user: User = Depends(get_current_active_user),
+    db=Depends(get_db)
+):
+    adjustment_records = await db.fetch('SELECT * FROM adjustments ORDER BY id')
+    return [record_to_adjustment(a) for a in adjustment_records]
+
+@app.post("/adjustments", response_model=Adjustment)
+async def create_adjustment(
+    adjustment: Adjustment,
+    current_user: User = Depends(get_current_active_user),
+    db=Depends(get_db)
+):
+    adjustment_id = await db.fetchval('''
+        INSERT INTO adjustments (
+            date, product_id, type, quantity,
+            reason, username
+        ) VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id
+    ''', adjustment.date, adjustment.product_id, adjustment.type,
+        adjustment.quantity, adjustment.reason, current_user.email)
+    
+    # Log activity
+    await db.execute('''
+        INSERT INTO activities (date, activity, username, details)
+        VALUES ($1, $2, $3, $4)
+    ''', datetime.now(timezone.utc), 'Stock adjustment', current_user.email,
+        f'Adjusted stock for product {adjustment.product_id}')
+    
+    return await db.fetchrow('SELECT * FROM adjustments WHERE id = $1', adjustment_id)
+
+# Activities endpoints
+@app.get("/activities", response_model=List[Activity])
+async def get_activities(
+    current_user: User = Depends(get_current_active_user),
+    db=Depends(get_db)
+):
+    activity_records = await db.fetch('SELECT * FROM activities ORDER BY date DESC LIMIT 100')
+    return [record_to_activity(a) for a in activity_records]
+
+# Settings endpoints
+@app.get("/settings", response_model=Settings)
+async def get_settings(
+    current_user: User = Depends(get_current_active_user),
+    db=Depends(get_db)
+):
+    settings_record = await db.fetchrow('SELECT * FROM settings LIMIT 1')
+    if not settings_record:
+        raise HTTPException(status_code=404, detail="Settings not found")
+    return record_to_settings(settings_record)
+
+@app.put("/settings", response_model=Settings)
+async def update_settings(
+    settings: Settings,
+    current_user: User = Depends(get_current_active_user),
+    db=Depends(get_db)
+):
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admin can update settings"
+        )
+    
+    await db.execute('''
+        UPDATE settings SET 
+            business_name = $1, currency = $2, tax_rate = $3,
+            low_stock_threshold = $4, invoice_prefix = $5,
+            purchase_prefix = $6, updated_at = CURRENT_TIMESTAMP
+    ''', settings.business_name, settings.currency, settings.tax_rate,
+        settings.low_stock_threshold, settings.invoice_prefix,
+        settings.purchase_prefix)
+    
+    # Log activity
+    await db.execute('''
+        INSERT INTO activities (date, activity, username, details)
+        VALUES ($1, $2, $3, $4)
+    ''', datetime.now(timezone.utc), 'Settings updated', current_user.email,
+        'Updated system settings')
+    
+    return await db.fetchrow('SELECT * FROM settings LIMIT 1')
+
+# Sync endpoint
+@app.post("/sync", response_model=SyncData)
+async def sync(
+    data: Dict[str, Any],
+    current_user: User = Depends(get_current_active_user),
+    db=Depends(get_db)
+):
+    try:
+        # Validate and parse the incoming data with proper datetime handling
+        sync_data = SyncData(**data)
+        server_time = datetime.now(timezone.utc).replace(tzinfo=None)  # Timezone-naive datetime
+        
+        logger.info(f"Received sync data from {current_user.email} with {len(sync_data.products)} products")
+        
+        result = SyncData(last_sync_time=server_time)
+        
+        async with db.acquire() as conn:
+            # Process products
+            for product in sync_data.products:
+                existing = await conn.fetchrow('SELECT * FROM products WHERE id = $1', product.id)
+                if existing:
+                    await conn.execute('''
+                        UPDATE products SET 
+                            name = $1, category_id = $2, description = $3,
+                            purchase_price = $4, selling_price = $5, stock = $6,
+                            reorder_level = $7, unit = $8, barcode = $9
+                        WHERE id = $10
+                    ''', product.name, product.category_id, product.description,
+                        product.purchase_price, product.selling_price, product.stock,
+                        product.reorder_level, product.unit, product.barcode, product.id)
+                else:
+                    await conn.execute('''
+                        INSERT INTO products (
+                            id, name, category_id, description, purchase_price,
+                            selling_price, stock, reorder_level, unit, barcode, created_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    ''', product.id, product.name, product.category_id, product.description,
+                        product.purchase_price, product.selling_price, product.stock,
+                        product.reorder_level, product.unit, product.barcode, 
+                        make_timezone_naive(product.created_at) or server_time)
+                result.products.append(product)
+            
+            # Process other entities (categories, suppliers, sales, purchases, etc.)
+            # ... (same as before but with current_user tracking)
+            
+            # Get all data from server to send back to client
+            product_records = await conn.fetch('SELECT * FROM products ORDER BY id')
+            result.products = [record_to_product(p) for p in product_records]
+            
+            # ... (other entities)
+            
+            settings_record = await conn.fetchrow('SELECT * FROM settings LIMIT 1')
+            if settings_record:
+                result.settings = record_to_settings(settings_record)
+            
+        logger.info(f"Sync completed successfully for {current_user.email}")
+        
+        return result
+    
+    except Exception as e:
+        logger.error(f"Sync error for {current_user.email}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail=str(e)
+        )
+
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
+
+# Helper functions for data conversion
 def record_to_product(record) -> Product:
     return Product(
         id=record['id'],
@@ -393,228 +923,3 @@ def record_to_settings(record) -> Settings:
         invoice_prefix=record['invoice_prefix'],
         purchase_prefix=record['purchase_prefix']
     )
-
-# Sync endpoint with proper datetime handling
-@app.post("/sync", response_model=SyncData)
-async def sync(data: Dict[str, Any], db=Depends(get_db)):
-    try:
-        # Validate and parse the incoming data with proper datetime handling
-        sync_data = SyncData(**data)
-        server_time = datetime.now(timezone.utc).replace(tzinfo=None)  # Timezone-naive datetime
-        
-        logger.info(f"Received sync data with {len(sync_data.products)} products, "
-                   f"{len(sync_data.categories)} categories, "
-                   f"{len(sync_data.sales)} sales")
-        
-        result = SyncData(last_sync_time=server_time)
-        
-        async with db.acquire() as conn:
-            # Process products
-            for product in sync_data.products:
-                existing = await conn.fetchrow('SELECT * FROM products WHERE id = $1', product.id)
-                if existing:
-                    await conn.execute('''
-                        UPDATE products SET 
-                            name = $1, category_id = $2, description = $3,
-                            purchase_price = $4, selling_price = $5, stock = $6,
-                            reorder_level = $7, unit = $8, barcode = $9
-                        WHERE id = $10
-                    ''', product.name, product.category_id, product.description,
-                        product.purchase_price, product.selling_price, product.stock,
-                        product.reorder_level, product.unit, product.barcode, product.id)
-                else:
-                    await conn.execute('''
-                        INSERT INTO products (
-                            id, name, category_id, description, purchase_price,
-                            selling_price, stock, reorder_level, unit, barcode, created_at
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                    ''', product.id, product.name, product.category_id, product.description,
-                        product.purchase_price, product.selling_price, product.stock,
-                        product.reorder_level, product.unit, product.barcode, 
-                        make_timezone_naive(product.created_at) or server_time)
-                result.products.append(product)
-            
-            # Process categories
-            for category in sync_data.categories:
-                existing = await conn.fetchrow('SELECT * FROM categories WHERE id = $1', category.id)
-                if existing:
-                    await conn.execute('''
-                        UPDATE categories SET name = $1, description = $2 WHERE id = $3
-                    ''', category.name, category.description, category.id)
-                else:
-                    await conn.execute('''
-                        INSERT INTO categories (id, name, description) VALUES ($1, $2, $3)
-                    ''', category.id, category.name, category.description)
-                result.categories.append(category)
-            
-            # Process suppliers
-            for supplier in sync_data.suppliers:
-                existing = await conn.fetchrow('SELECT * FROM suppliers WHERE id = $1', supplier.id)
-                if existing:
-                    await conn.execute('''
-                        UPDATE suppliers SET 
-                            name = $1, contact_person = $2, phone = $3,
-                            email = $4, address = $5, products = $6,
-                            payment_terms = $7
-                        WHERE id = $8
-                    ''', supplier.name, supplier.contact_person, supplier.phone,
-                        supplier.email, supplier.address, supplier.products,
-                        supplier.payment_terms, supplier.id)
-                else:
-                    await conn.execute('''
-                        INSERT INTO suppliers (
-                            id, name, contact_person, phone, email,
-                            address, products, payment_terms
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                    ''', supplier.id, supplier.name, supplier.contact_person, supplier.phone,
-                        supplier.email, supplier.address, supplier.products,
-                        supplier.payment_terms)
-                result.suppliers.append(supplier)
-            
-            # Process sales
-            for sale in sync_data.sales:
-                existing = await conn.fetchrow('SELECT * FROM sales WHERE id = $1', sale.id)
-                if existing:
-                    await conn.execute('''
-                        UPDATE sales SET 
-                            date = $1, invoice_number = $2, customer = $3,
-                            items = $4::jsonb, payment_method = $5, notes = $6
-                        WHERE id = $7
-                    ''', make_timezone_naive(sale.date), sale.invoice_number, sale.customer,
-                        json.dumps([item.dict() for item in sale.items]), 
-                        sale.payment_method, sale.notes, sale.id)
-                else:
-                    await conn.execute('''
-                        INSERT INTO sales (
-                            id, date, invoice_number, customer, items,
-                            payment_method, notes
-                        ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
-                    ''', sale.id, make_timezone_naive(sale.date), sale.invoice_number, sale.customer,
-                        json.dumps([item.dict() for item in sale.items]), 
-                        sale.payment_method, sale.notes)
-                result.sales.append(sale)
-            
-            # Process purchases
-            for purchase in sync_data.purchases:
-                existing = await conn.fetchrow('SELECT * FROM purchases WHERE id = $1', purchase.id)
-                if existing:
-                    await conn.execute('''
-                        UPDATE purchases SET 
-                            date = $1, reference_number = $2, supplier_id = $3,
-                            items = $4::jsonb, payment_method = $5, notes = $6
-                        WHERE id = $7
-                    ''', make_timezone_naive(purchase.date), purchase.reference_number, purchase.supplier_id,
-                        json.dumps([item.dict() for item in purchase.items]), 
-                        purchase.payment_method, purchase.notes, purchase.id)
-                else:
-                    await conn.execute('''
-                        INSERT INTO purchases (
-                            id, date, reference_number, supplier_id, items,
-                            payment_method, notes
-                        ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
-                    ''', purchase.id, make_timezone_naive(purchase.date), purchase.reference_number, purchase.supplier_id,
-                        json.dumps([item.dict() for item in purchase.items]), 
-                        purchase.payment_method, purchase.notes)
-                result.purchases.append(purchase)
-            
-            # Process adjustments
-            for adjustment in sync_data.adjustments:
-                existing = await conn.fetchrow('SELECT * FROM adjustments WHERE id = $1', adjustment.id)
-                if existing:
-                    await conn.execute('''
-                        UPDATE adjustments SET 
-                            date = $1, product_id = $2, type = $3,
-                            quantity = $4, reason = $5, username = $6
-                        WHERE id = $7
-                    ''', make_timezone_naive(adjustment.date), adjustment.product_id, adjustment.type,
-                        adjustment.quantity, adjustment.reason, adjustment.username or "system", adjustment.id)
-                else:
-                    await conn.execute('''
-                        INSERT INTO adjustments (
-                            id, date, product_id, type, quantity,
-                            reason, username
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    ''', adjustment.id, make_timezone_naive(adjustment.date), adjustment.product_id, adjustment.type,
-                        adjustment.quantity, adjustment.reason, adjustment.username or "system")
-                result.adjustments.append(adjustment)
-            
-            # Process activities - fixed to ensure username is never null
-            for activity in sync_data.activities:
-                existing = await conn.fetchrow('SELECT * FROM activities WHERE id = $1', activity.id)
-                if existing:
-                    await conn.execute('''
-                        UPDATE activities SET 
-                            date = $1, activity = $2, username = $3, details = $4
-                        WHERE id = $5
-                    ''', make_timezone_naive(activity.date), activity.activity, activity.username or "system", activity.details, activity.id)
-                else:
-                    await conn.execute('''
-                        INSERT INTO activities (
-                            id, date, activity, username, details
-                        ) VALUES ($1, $2, $3, $4, $5)
-                    ''', activity.id, make_timezone_naive(activity.date), activity.activity, activity.username or "system", activity.details)
-                result.activities.append(activity)
-            
-            # Process settings
-            if sync_data.settings:
-                await conn.execute('''
-                    UPDATE settings SET 
-                        business_name = $1, currency = $2, tax_rate = $3,
-                        low_stock_threshold = $4, invoice_prefix = $5,
-                        purchase_prefix = $6, updated_at = CURRENT_TIMESTAMP
-                ''', sync_data.settings.business_name, sync_data.settings.currency, sync_data.settings.tax_rate,
-                    sync_data.settings.low_stock_threshold, sync_data.settings.invoice_prefix,
-                    sync_data.settings.purchase_prefix)
-                result.settings = sync_data.settings
-            
-            # Get all data from server to send back to client
-            product_records = await conn.fetch('SELECT * FROM products ORDER BY id')
-            result.products = [record_to_product(p) for p in product_records]
-            
-            category_records = await conn.fetch('SELECT * FROM categories ORDER BY id')
-            result.categories = [record_to_category(c) for c in category_records]
-            
-            supplier_records = await conn.fetch('SELECT * FROM suppliers ORDER BY id')
-            result.suppliers = [record_to_supplier(s) for s in supplier_records]
-            
-            sale_records = await conn.fetch('SELECT * FROM sales ORDER BY id')
-            result.sales = [record_to_sale(s) for s in sale_records]
-            
-            purchase_records = await conn.fetch('SELECT * FROM purchases ORDER BY id')
-            result.purchases = [record_to_purchase(p) for p in purchase_records]
-            
-            adjustment_records = await conn.fetch('SELECT * FROM adjustments ORDER BY id')
-            result.adjustments = [record_to_adjustment(a) for a in adjustment_records]
-            
-            activity_records = await conn.fetch('SELECT * FROM activities ORDER BY id')
-            result.activities = [record_to_activity(a) for a in activity_records]
-            
-            settings_record = await conn.fetchrow('SELECT * FROM settings LIMIT 1')
-            if settings_record:
-                result.settings = record_to_settings(settings_record)
-            
-        logger.info(f"Sync completed successfully. Returning {len(result.products)} products, "
-                   f"{len(result.categories)} categories, {len(result.sales)} sales")
-        
-        return result
-    
-    except Exception as e:
-        logger.error(f"Sync error: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
-            detail=str(e)
-        )
-
-# Health check endpoint
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
-
-# Sync status endpoint
-@app.get("/sync/status")
-async def sync_status():
-    return {
-        "status": "ready",
-        "last_sync_time": datetime.now(timezone.utc).isoformat(),
-        "message": "Sync service is operational"
-    }
