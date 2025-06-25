@@ -526,6 +526,53 @@ async def get_products(
     product_records = await db.fetch('SELECT * FROM products ORDER BY id')
     return [record_to_product(p) for p in product_records]
 
+@app.post("/signup", response_model=User)
+async def signup(
+    user_data: UserCreate,
+    db=Depends(get_db)
+):
+    # Check if email already exists
+    existing_user = await get_user_by_email(db, user_data.email)
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+    
+    # Hash the password
+    hashed_password = get_password_hash(user_data.password)
+    
+    try:
+        # Create the user in database
+        user_id = await db.fetchval('''
+            INSERT INTO users (email, full_name, hashed_password, role)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id
+        ''', user_data.email, user_data.full_name, hashed_password, "user")
+        
+        # Log activity
+        await db.execute('''
+            INSERT INTO activities (date, activity, username, details)
+            VALUES ($1, $2, $3, $4)
+        ''', datetime.now(timezone.utc), 'User registered', user_data.email,
+            f'New user registered: {user_data.full_name}')
+        
+        # Return the created user
+        user_record = await db.fetchrow('SELECT * FROM users WHERE id = $1', user_id)
+        return User(
+            id=user_record['id'],
+            email=user_record['email'],
+            full_name=user_record['full_name'],
+            role=user_record['role'],
+            disabled=user_record['disabled']
+        )
+    except Exception as e:
+        logger.error(f"Error creating user: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error creating user"
+        )
+
 @app.post("/products", response_model=Product)
 async def create_product(
     product: Product,
