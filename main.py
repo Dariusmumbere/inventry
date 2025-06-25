@@ -550,11 +550,16 @@ async def signup(
             RETURNING id
         ''', user_data.email, user_data.full_name, hashed_password, "user")
         
+        # Use timezone-naive datetime
+        current_time = datetime.now()
+        
         # Log activity
         await db.execute('''
             INSERT INTO activities (date, activity, username, details)
             VALUES ($1, $2, $3, $4)
-        ''', datetime.now(timezone.utc), 'User registered', user_data.email,
+        ''', current_time,  # Using naive datetime
+            'User registered', 
+            user_data.email,
             f'New user registered: {user_data.full_name}')
         
         # Return the created user
