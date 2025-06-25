@@ -33,6 +33,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["set-cookie"]  # Important for cookies
 )
 
 # Security constants
@@ -480,16 +481,17 @@ async def login_for_access_token(
         value=f"Bearer {access_token}",
         httponly=True,
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        secure=True,  # Set to True in production with HTTPS
-        samesite="lax"
+        secure=True,  # Important for production
+        samesite="lax",
+        domain=".dariusmumbere.github.io"  # Important for GitHub Pages
     )
     
     return {
-        "access_token": access_token,
+        "access_token": access_token,  # Also return in body for frontend
         "token_type": "bearer",
         "user": User(**user.dict())
     }
-
+    
 @app.post("/logout")
 async def logout(response: Response):
     response.delete_cookie("access_token")
