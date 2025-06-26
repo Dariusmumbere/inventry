@@ -810,8 +810,6 @@ async def update_settings(
     
     return await db.fetchrow('SELECT * FROM settings WHERE user_id = $1', current_user.id)
 
-# Sync endpoint
-# Sync endpoint
 @app.post("/sync", response_model=SyncData)
 async def sync(
     data: Dict[str, Any],
@@ -819,6 +817,7 @@ async def sync(
     db=Depends(get_db)
 ):
     try:
+        # Validate and clean incoming data
         sync_data = SyncData(**data)
         server_time = datetime.now(timezone.utc).replace(tzinfo=None)
         
@@ -827,8 +826,11 @@ async def sync(
         result = SyncData(last_sync_time=server_time)
         
         async with db.acquire() as conn:
-            # Process products
+            # Process products - ensure they belong to current user
             for product in sync_data.products:
+                if product.user_id != current_user.id:
+                    continue  # Skip products that don't belong to this user
+                    
                 existing = await conn.fetchrow(
                     'SELECT * FROM products WHERE id = $1 AND user_id = $2', 
                     product.id, current_user.id
@@ -855,7 +857,7 @@ async def sync(
                         product.stock, product.reorder_level, product.unit, product.barcode, 
                         make_timezone_naive(product.created_at) or server_time)
             
-            # Process other entities similarly with user_id
+            # Process other entities similarly with user_id validation
             
             # Get all user data from server to send back to client
             result.products = [record_to_product(p) for p in 
@@ -892,6 +894,7 @@ async def sync(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
             detail=str(error)
         )
+        
 # Health check endpoint
 @app.get("/health")
 async def health_check():
