@@ -33,7 +33,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["set-cookie"]  # Important for cookies
+    expose_headers=["set-cookie"]
 )
 
 # Security constants
@@ -87,9 +87,10 @@ class UserUpdate(BaseModel):
     role: Optional[str] = None
     disabled: Optional[bool] = None
 
-# Inventory Models (existing)
+# Inventory Models with user_id
 class Product(BaseModel):
     id: int
+    user_id: int
     name: str
     category_id: Optional[int] = None
     description: Optional[str] = None
@@ -108,11 +109,13 @@ class Product(BaseModel):
 
 class Category(BaseModel):
     id: int
+    user_id: int
     name: str
     description: Optional[str] = None
 
 class Supplier(BaseModel):
     id: int
+    user_id: int
     name: str
     contact_person: Optional[str] = None
     phone: str
@@ -129,6 +132,7 @@ class SaleItem(BaseModel):
 
 class Sale(BaseModel):
     id: int
+    user_id: int
     date: datetime
     invoice_number: str
     customer: Optional[str] = None
@@ -149,6 +153,7 @@ class PurchaseItem(BaseModel):
 
 class Purchase(BaseModel):
     id: int
+    user_id: int
     date: datetime
     reference_number: str
     supplier_id: int
@@ -163,6 +168,7 @@ class Purchase(BaseModel):
 
 class Adjustment(BaseModel):
     id: int
+    user_id: int
     date: datetime
     product_id: int
     type: str  # 'add' or 'remove'
@@ -177,6 +183,7 @@ class Adjustment(BaseModel):
 
 class Activity(BaseModel):
     id: int
+    user_id: int
     date: datetime
     activity: str
     username: str = "system"
@@ -188,6 +195,7 @@ class Activity(BaseModel):
         }
 
 class Settings(BaseModel):
+    user_id: int
     business_name: str
     currency: str
     tax_rate: float
@@ -299,20 +307,11 @@ async def init_db():
                 VALUES ($1, $2, $3, $4)
             ''', 'admin@stockmaster.ug', 'Admin User', hashed_password, 'admin')
 
-        # Existing inventory tables
-        await conn.execute('DROP TABLE IF EXISTS activities CASCADE')
-        await conn.execute('DROP TABLE IF EXISTS adjustments CASCADE')
-        await conn.execute('DROP TABLE IF EXISTS purchases CASCADE')
-        await conn.execute('DROP TABLE IF EXISTS sales CASCADE')
-        await conn.execute('DROP TABLE IF EXISTS suppliers CASCADE')
-        await conn.execute('DROP TABLE IF EXISTS categories CASCADE')
-        await conn.execute('DROP TABLE IF EXISTS products CASCADE')
-        await conn.execute('DROP TABLE IF EXISTS settings CASCADE')
-
-        # Create tables with all required columns
+        # Create tables with user_id
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS products (
                 id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 name TEXT NOT NULL,
                 category_id INTEGER,
                 description TEXT,
@@ -329,6 +328,7 @@ async def init_db():
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS categories (
                 id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 name TEXT NOT NULL,
                 description TEXT
             )
@@ -337,6 +337,7 @@ async def init_db():
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS suppliers (
                 id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 name TEXT NOT NULL,
                 contact_person TEXT,
                 phone TEXT NOT NULL,
@@ -350,6 +351,7 @@ async def init_db():
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS sales (
                 id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 date TIMESTAMP WITHOUT TIME ZONE NOT NULL,
                 invoice_number TEXT NOT NULL,
                 customer TEXT,
@@ -362,6 +364,7 @@ async def init_db():
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS purchases (
                 id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 date TIMESTAMP WITHOUT TIME ZONE NOT NULL,
                 reference_number TEXT NOT NULL,
                 supplier_id INTEGER,
@@ -374,6 +377,7 @@ async def init_db():
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS adjustments (
                 id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 date TIMESTAMP WITHOUT TIME ZONE NOT NULL,
                 product_id INTEGER NOT NULL,
                 type TEXT NOT NULL,
@@ -386,6 +390,7 @@ async def init_db():
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS activities (
                 id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 date TIMESTAMP WITHOUT TIME ZONE NOT NULL,
                 activity TEXT NOT NULL,
                 username TEXT NOT NULL DEFAULT 'system',
@@ -395,6 +400,7 @@ async def init_db():
         
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS settings (
+                user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
                 business_name TEXT NOT NULL,
                 currency TEXT NOT NULL,
                 tax_rate DECIMAL(5, 2) NOT NULL,
@@ -404,16 +410,6 @@ async def init_db():
                 updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        
-        # Insert default settings if none exist
-        settings = await conn.fetchrow('SELECT * FROM settings LIMIT 1')
-        if not settings:
-            await conn.execute('''
-                INSERT INTO settings (
-                    business_name, currency, tax_rate, 
-                    low_stock_threshold, invoice_prefix, purchase_prefix
-                ) VALUES ($1, $2, $3, $4, $5, $6)
-            ''', 'StockMaster UG', 'UGX', 18, 5, 'INV', 'PUR')
 
 @app.on_event("startup")
 async def startup():
@@ -481,13 +477,13 @@ async def login_for_access_token(
         value=f"Bearer {access_token}",
         httponly=True,
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        secure=True,  # Important for production
+        secure=True,
         samesite="none",
-        domain="dariusmumbere.github.io"  # Important for GitHub Pages
+        domain="dariusmumbere.github.io"
     )
     
     return {
-        "access_token": access_token,  # Also return in body for frontend
+        "access_token": access_token,
         "token_type": "bearer",
         "user": User(**user.dict())
     }
@@ -523,7 +519,7 @@ async def get_products(
     current_user: User = Depends(get_current_active_user),
     db=Depends(get_db)
 ):
-    product_records = await db.fetch('SELECT * FROM products ORDER BY id')
+    product_records = await db.fetch('SELECT * FROM products WHERE user_id = $1 ORDER BY id', current_user.id)
     return [record_to_product(p) for p in product_records]
 
 @app.post("/signup", response_model=User)
@@ -531,7 +527,6 @@ async def signup(
     user_data: UserCreate,
     db=Depends(get_db)
 ):
-    # Check if email already exists
     existing_user = await get_user_by_email(db, user_data.email)
     if existing_user:
         raise HTTPException(
@@ -539,30 +534,32 @@ async def signup(
             detail="Email already registered"
         )
     
-    # Hash the password
     hashed_password = get_password_hash(user_data.password)
     
     try:
-        # Create the user in database
         user_id = await db.fetchval('''
             INSERT INTO users (email, full_name, hashed_password, role)
             VALUES ($1, $2, $3, $4)
             RETURNING id
         ''', user_data.email, user_data.full_name, hashed_password, "user")
         
-        # Use timezone-naive datetime
-        current_time = datetime.now()
+        # Create default settings for the user
+        await db.execute('''
+            INSERT INTO settings (
+                user_id, business_name, currency, tax_rate, 
+                low_stock_threshold, invoice_prefix, purchase_prefix
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ''', user_id, 'StockMaster UG', 'UGX', 18, 5, 'INV', 'PUR')
         
         # Log activity
         await db.execute('''
-            INSERT INTO activities (date, activity, username, details)
-            VALUES ($1, $2, $3, $4)
-        ''', current_time,  # Using naive datetime
+            INSERT INTO activities (user_id, date, activity, username, details)
+            VALUES ($1, $2, $3, $4, $5)
+        ''', user_id, datetime.now(timezone.utc), 
             'User registered', 
             user_data.email,
             f'New user registered: {user_data.full_name}')
         
-        # Return the created user
         user_record = await db.fetchrow('SELECT * FROM users WHERE id = $1', user_id)
         return User(
             id=user_record['id'],
@@ -586,22 +583,22 @@ async def create_product(
 ):
     product_id = await db.fetchval('''
         INSERT INTO products (
-            name, category_id, description, purchase_price,
+            user_id, name, category_id, description, purchase_price,
             selling_price, stock, reorder_level, unit, barcode
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING id
-    ''', product.name, product.category_id, product.description,
+    ''', current_user.id, product.name, product.category_id, product.description,
         product.purchase_price, product.selling_price, product.stock,
         product.reorder_level, product.unit, product.barcode)
     
     # Log activity
     await db.execute('''
-        INSERT INTO activities (date, activity, username, details)
-        VALUES ($1, $2, $3, $4)
-    ''', datetime.now(timezone.utc), 'Product created', current_user.email,
+        INSERT INTO activities (user_id, date, activity, username, details)
+        VALUES ($1, $2, $3, $4, $5)
+    ''', current_user.id, datetime.now(timezone.utc), 'Product created', current_user.email,
         f'Created product {product.name}')
     
-    return await db.fetchrow('SELECT * FROM products WHERE id = $1', product_id)
+    return await db.fetchrow('SELECT * FROM products WHERE id = $1 AND user_id = $2', product_id, current_user.id)
 
 # Categories endpoints
 @app.get("/categories", response_model=List[Category])
@@ -609,7 +606,7 @@ async def get_categories(
     current_user: User = Depends(get_current_active_user),
     db=Depends(get_db)
 ):
-    category_records = await db.fetch('SELECT * FROM categories ORDER BY id')
+    category_records = await db.fetch('SELECT * FROM categories WHERE user_id = $1 ORDER BY id', current_user.id)
     return [record_to_category(c) for c in category_records]
 
 @app.post("/categories", response_model=Category)
@@ -619,19 +616,19 @@ async def create_category(
     db=Depends(get_db)
 ):
     category_id = await db.fetchval('''
-        INSERT INTO categories (name, description)
-        VALUES ($1, $2)
+        INSERT INTO categories (user_id, name, description)
+        VALUES ($1, $2, $3)
         RETURNING id
-    ''', category.name, category.description)
+    ''', current_user.id, category.name, category.description)
     
     # Log activity
     await db.execute('''
-        INSERT INTO activities (date, activity, username, details)
-        VALUES ($1, $2, $3, $4)
-    ''', datetime.now(timezone.utc), 'Category created', current_user.email,
+        INSERT INTO activities (user_id, date, activity, username, details)
+        VALUES ($1, $2, $3, $4, $5)
+    ''', current_user.id, datetime.now(timezone.utc), 'Category created', current_user.email,
         f'Created category {category.name}')
     
-    return await db.fetchrow('SELECT * FROM categories WHERE id = $1', category_id)
+    return await db.fetchrow('SELECT * FROM categories WHERE id = $1 AND user_id = $2', category_id, current_user.id)
 
 # Suppliers endpoints
 @app.get("/suppliers", response_model=List[Supplier])
@@ -639,7 +636,7 @@ async def get_suppliers(
     current_user: User = Depends(get_current_active_user),
     db=Depends(get_db)
 ):
-    supplier_records = await db.fetch('SELECT * FROM suppliers ORDER BY id')
+    supplier_records = await db.fetch('SELECT * FROM suppliers WHERE user_id = $1 ORDER BY id', current_user.id)
     return [record_to_supplier(s) for s in supplier_records]
 
 @app.post("/suppliers", response_model=Supplier)
@@ -650,22 +647,22 @@ async def create_supplier(
 ):
     supplier_id = await db.fetchval('''
         INSERT INTO suppliers (
-            name, contact_person, phone, email,
+            user_id, name, contact_person, phone, email,
             address, products, payment_terms
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING id
-    ''', supplier.name, supplier.contact_person, supplier.phone,
+    ''', current_user.id, supplier.name, supplier.contact_person, supplier.phone,
         supplier.email, supplier.address, supplier.products,
         supplier.payment_terms)
     
     # Log activity
     await db.execute('''
-        INSERT INTO activities (date, activity, username, details)
-        VALUES ($1, $2, $3, $4)
-    ''', datetime.now(timezone.utc), 'Supplier created', current_user.email,
+        INSERT INTO activities (user_id, date, activity, username, details)
+        VALUES ($1, $2, $3, $4, $5)
+    ''', current_user.id, datetime.now(timezone.utc), 'Supplier created', current_user.email,
         f'Created supplier {supplier.name}')
     
-    return await db.fetchrow('SELECT * FROM suppliers WHERE id = $1', supplier_id)
+    return await db.fetchrow('SELECT * FROM suppliers WHERE id = $1 AND user_id = $2', supplier_id, current_user.id)
 
 # Sales endpoints
 @app.get("/sales", response_model=List[Sale])
@@ -673,7 +670,7 @@ async def get_sales(
     current_user: User = Depends(get_current_active_user),
     db=Depends(get_db)
 ):
-    sale_records = await db.fetch('SELECT * FROM sales ORDER BY id')
+    sale_records = await db.fetch('SELECT * FROM sales WHERE user_id = $1 ORDER BY id', current_user.id)
     return [record_to_sale(s) for s in sale_records]
 
 @app.post("/sales", response_model=Sale)
@@ -684,22 +681,22 @@ async def create_sale(
 ):
     sale_id = await db.fetchval('''
         INSERT INTO sales (
-            date, invoice_number, customer, items,
+            user_id, date, invoice_number, customer, items,
             payment_method, notes
-        ) VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+        ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
         RETURNING id
-    ''', sale.date, sale.invoice_number, sale.customer,
+    ''', current_user.id, sale.date, sale.invoice_number, sale.customer,
         json.dumps([item.dict() for item in sale.items]), 
         sale.payment_method, sale.notes)
     
     # Log activity
     await db.execute('''
-        INSERT INTO activities (date, activity, username, details)
-        VALUES ($1, $2, $3, $4)
-    ''', datetime.now(timezone.utc), 'Sale recorded', current_user.email,
+        INSERT INTO activities (user_id, date, activity, username, details)
+        VALUES ($1, $2, $3, $4, $5)
+    ''', current_user.id, datetime.now(timezone.utc), 'Sale recorded', current_user.email,
         f'Recorded sale {sale.invoice_number}')
     
-    return await db.fetchrow('SELECT * FROM sales WHERE id = $1', sale_id)
+    return await db.fetchrow('SELECT * FROM sales WHERE id = $1 AND user_id = $2', sale_id, current_user.id)
 
 # Purchases endpoints
 @app.get("/purchases", response_model=List[Purchase])
@@ -707,7 +704,7 @@ async def get_purchases(
     current_user: User = Depends(get_current_active_user),
     db=Depends(get_db)
 ):
-    purchase_records = await db.fetch('SELECT * FROM purchases ORDER BY id')
+    purchase_records = await db.fetch('SELECT * FROM purchases WHERE user_id = $1 ORDER BY id', current_user.id)
     return [record_to_purchase(p) for p in purchase_records]
 
 @app.post("/purchases", response_model=Purchase)
@@ -718,22 +715,22 @@ async def create_purchase(
 ):
     purchase_id = await db.fetchval('''
         INSERT INTO purchases (
-            date, reference_number, supplier_id, items,
+            user_id, date, reference_number, supplier_id, items,
             payment_method, notes
-        ) VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+        ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
         RETURNING id
-    ''', purchase.date, purchase.reference_number, purchase.supplier_id,
+    ''', current_user.id, purchase.date, purchase.reference_number, purchase.supplier_id,
         json.dumps([item.dict() for item in purchase.items]), 
         purchase.payment_method, purchase.notes)
     
     # Log activity
     await db.execute('''
-        INSERT INTO activities (date, activity, username, details)
-        VALUES ($1, $2, $3, $4)
-    ''', datetime.now(timezone.utc), 'Purchase recorded', current_user.email,
+        INSERT INTO activities (user_id, date, activity, username, details)
+        VALUES ($1, $2, $3, $4, $5)
+    ''', current_user.id, datetime.now(timezone.utc), 'Purchase recorded', current_user.email,
         f'Recorded purchase {purchase.reference_number}')
     
-    return await db.fetchrow('SELECT * FROM purchases WHERE id = $1', purchase_id)
+    return await db.fetchrow('SELECT * FROM purchases WHERE id = $1 AND user_id = $2', purchase_id, current_user.id)
 
 # Adjustments endpoints
 @app.get("/adjustments", response_model=List[Adjustment])
@@ -741,7 +738,7 @@ async def get_adjustments(
     current_user: User = Depends(get_current_active_user),
     db=Depends(get_db)
 ):
-    adjustment_records = await db.fetch('SELECT * FROM adjustments ORDER BY id')
+    adjustment_records = await db.fetch('SELECT * FROM adjustments WHERE user_id = $1 ORDER BY id', current_user.id)
     return [record_to_adjustment(a) for a in adjustment_records]
 
 @app.post("/adjustments", response_model=Adjustment)
@@ -752,21 +749,21 @@ async def create_adjustment(
 ):
     adjustment_id = await db.fetchval('''
         INSERT INTO adjustments (
-            date, product_id, type, quantity,
+            user_id, date, product_id, type, quantity,
             reason, username
-        ) VALUES ($1, $2, $3, $4, $5, $6)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING id
-    ''', adjustment.date, adjustment.product_id, adjustment.type,
+    ''', current_user.id, adjustment.date, adjustment.product_id, adjustment.type,
         adjustment.quantity, adjustment.reason, current_user.email)
     
     # Log activity
     await db.execute('''
-        INSERT INTO activities (date, activity, username, details)
-        VALUES ($1, $2, $3, $4)
-    ''', datetime.now(timezone.utc), 'Stock adjustment', current_user.email,
+        INSERT INTO activities (user_id, date, activity, username, details)
+        VALUES ($1, $2, $3, $4, $5)
+    ''', current_user.id, datetime.now(timezone.utc), 'Stock adjustment', current_user.email,
         f'Adjusted stock for product {adjustment.product_id}')
     
-    return await db.fetchrow('SELECT * FROM adjustments WHERE id = $1', adjustment_id)
+    return await db.fetchrow('SELECT * FROM adjustments WHERE id = $1 AND user_id = $2', adjustment_id, current_user.id)
 
 # Activities endpoints
 @app.get("/activities", response_model=List[Activity])
@@ -774,7 +771,7 @@ async def get_activities(
     current_user: User = Depends(get_current_active_user),
     db=Depends(get_db)
 ):
-    activity_records = await db.fetch('SELECT * FROM activities ORDER BY date DESC LIMIT 100')
+    activity_records = await db.fetch('SELECT * FROM activities WHERE user_id = $1 ORDER BY date DESC LIMIT 100', current_user.id)
     return [record_to_activity(a) for a in activity_records]
 
 # Settings endpoints
@@ -783,7 +780,7 @@ async def get_settings(
     current_user: User = Depends(get_current_active_user),
     db=Depends(get_db)
 ):
-    settings_record = await db.fetchrow('SELECT * FROM settings LIMIT 1')
+    settings_record = await db.fetchrow('SELECT * FROM settings WHERE user_id = $1', current_user.id)
     if not settings_record:
         raise HTTPException(status_code=404, detail="Settings not found")
     return record_to_settings(settings_record)
@@ -794,29 +791,24 @@ async def update_settings(
     current_user: User = Depends(get_current_active_user),
     db=Depends(get_db)
 ):
-    if current_user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admin can update settings"
-        )
-    
     await db.execute('''
         UPDATE settings SET 
             business_name = $1, currency = $2, tax_rate = $3,
             low_stock_threshold = $4, invoice_prefix = $5,
             purchase_prefix = $6, updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = $7
     ''', settings.business_name, settings.currency, settings.tax_rate,
         settings.low_stock_threshold, settings.invoice_prefix,
-        settings.purchase_prefix)
+        settings.purchase_prefix, current_user.id)
     
     # Log activity
     await db.execute('''
-        INSERT INTO activities (date, activity, username, details)
-        VALUES ($1, $2, $3, $4)
-    ''', datetime.now(timezone.utc), 'Settings updated', current_user.email,
+        INSERT INTO activities (user_id, date, activity, username, details)
+        VALUES ($1, $2, $3, $4, $5)
+    ''', current_user.id, datetime.now(timezone.utc), 'Settings updated', current_user.email,
         'Updated system settings')
     
-    return await db.fetchrow('SELECT * FROM settings LIMIT 1')
+    return await db.fetchrow('SELECT * FROM settings WHERE user_id = $1', current_user.id)
 
 # Sync endpoint
 @app.post("/sync", response_model=SyncData)
@@ -825,64 +817,82 @@ async def sync(
     current_user: User = Depends(get_current_active_user),
     db=Depends(get_db)
 ):
-    try:
-        # Validate and parse the incoming data with proper datetime handling
+    try {
         sync_data = SyncData(**data)
-        server_time = datetime.now(timezone.utc).replace(tzinfo=None)  # Timezone-naive datetime
+        server_time = datetime.now(timezone.utc).replace(tzinfo=None)
         
-        logger.info(f"Received sync data from {current_user.email} with {len(sync_data.products)} products")
+        logger.info(f"Received sync data from {current_user.email}")
         
         result = SyncData(last_sync_time=server_time)
         
         async with db.acquire() as conn:
             # Process products
             for product in sync_data.products:
-                existing = await conn.fetchrow('SELECT * FROM products WHERE id = $1', product.id)
+                existing = await conn.fetchrow(
+                    'SELECT * FROM products WHERE id = $1 AND user_id = $2', 
+                    product.id, current_user.id
+                )
                 if existing:
                     await conn.execute('''
                         UPDATE products SET 
                             name = $1, category_id = $2, description = $3,
                             purchase_price = $4, selling_price = $5, stock = $6,
                             reorder_level = $7, unit = $8, barcode = $9
-                        WHERE id = $10
+                        WHERE id = $10 AND user_id = $11
                     ''', product.name, product.category_id, product.description,
                         product.purchase_price, product.selling_price, product.stock,
-                        product.reorder_level, product.unit, product.barcode, product.id)
+                        product.reorder_level, product.unit, product.barcode, 
+                        product.id, current_user.id)
                 else:
                     await conn.execute('''
                         INSERT INTO products (
-                            id, name, category_id, description, purchase_price,
+                            id, user_id, name, category_id, description, purchase_price,
                             selling_price, stock, reorder_level, unit, barcode, created_at
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                    ''', product.id, product.name, product.category_id, product.description,
-                        product.purchase_price, product.selling_price, product.stock,
-                        product.reorder_level, product.unit, product.barcode, 
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                    ''', product.id, current_user.id, product.name, product.category_id, 
+                        product.description, product.purchase_price, product.selling_price, 
+                        product.stock, product.reorder_level, product.unit, product.barcode, 
                         make_timezone_naive(product.created_at) or server_time)
-                result.products.append(product)
             
-            # Process other entities (categories, suppliers, sales, purchases, etc.)
-            # ... (same as before but with current_user tracking)
+            # Process other entities similarly with user_id
             
-            # Get all data from server to send back to client
-            product_records = await conn.fetch('SELECT * FROM products ORDER BY id')
-            result.products = [record_to_product(p) for p in product_records]
+            # Get all user data from server to send back to client
+            result.products = [record_to_product(p) for p in 
+                await conn.fetch('SELECT * FROM products WHERE user_id = $1 ORDER BY id', current_user.id)]
             
-            # ... (other entities)
+            result.categories = [record_to_category(c) for c in 
+                await conn.fetch('SELECT * FROM categories WHERE user_id = $1 ORDER BY id', current_user.id)]
             
-            settings_record = await conn.fetchrow('SELECT * FROM settings LIMIT 1')
+            result.suppliers = [record_to_supplier(s) for s in 
+                await conn.fetch('SELECT * FROM suppliers WHERE user_id = $1 ORDER BY id', current_user.id)]
+            
+            result.sales = [record_to_sale(s) for s in 
+                await conn.fetch('SELECT * FROM sales WHERE user_id = $1 ORDER BY id', current_user.id)]
+            
+            result.purchases = [record_to_purchase(p) for p in 
+                await conn.fetch('SELECT * FROM purchases WHERE user_id = $1 ORDER BY id', current_user.id)]
+            
+            result.adjustments = [record_to_adjustment(a) for a in 
+                await conn.fetch('SELECT * FROM adjustments WHERE user_id = $1 ORDER BY id', current_user.id)]
+            
+            result.activities = [record_to_activity(a) for a in 
+                await conn.fetch('SELECT * FROM activities WHERE user_id = $1 ORDER BY date DESC LIMIT 100', current_user.id)]
+            
+            settings_record = await conn.fetchrow('SELECT * FROM settings WHERE user_id = $1', current_user.id)
             if settings_record:
                 result.settings = record_to_settings(settings_record)
             
         logger.info(f"Sync completed successfully for {current_user.email}")
-        
         return result
     
-    except Exception as e:
-        logger.error(f"Sync error for {current_user.email}: {str(e)}", exc_info=True)
+    } catch (error) {
+        logger.error(f"Sync error for {current_user.email}: {str(error)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
-            detail=str(e)
+            detail=str(error)
         )
+    }
+}
 
 # Health check endpoint
 @app.get("/health")
@@ -893,6 +903,7 @@ async def health_check():
 def record_to_product(record) -> Product:
     return Product(
         id=record['id'],
+        user_id=record['user_id'],
         name=record['name'],
         category_id=record['category_id'],
         description=record['description'],
@@ -908,6 +919,7 @@ def record_to_product(record) -> Product:
 def record_to_category(record) -> Category:
     return Category(
         id=record['id'],
+        user_id=record['user_id'],
         name=record['name'],
         description=record['description']
     )
@@ -915,6 +927,7 @@ def record_to_category(record) -> Category:
 def record_to_supplier(record) -> Supplier:
     return Supplier(
         id=record['id'],
+        user_id=record['user_id'],
         name=record['name'],
         contact_person=record['contact_person'],
         phone=record['phone'],
@@ -928,6 +941,7 @@ def record_to_sale(record) -> Sale:
     items = [SaleItem(**item) for item in record['items']]
     return Sale(
         id=record['id'],
+        user_id=record['user_id'],
         date=make_timezone_naive(record['date']),
         invoice_number=record['invoice_number'],
         customer=record['customer'],
@@ -940,6 +954,7 @@ def record_to_purchase(record) -> Purchase:
     items = [PurchaseItem(**item) for item in record['items']]
     return Purchase(
         id=record['id'],
+        user_id=record['user_id'],
         date=make_timezone_naive(record['date']),
         reference_number=record['reference_number'],
         supplier_id=record['supplier_id'],
@@ -951,6 +966,7 @@ def record_to_purchase(record) -> Purchase:
 def record_to_adjustment(record) -> Adjustment:
     return Adjustment(
         id=record['id'],
+        user_id=record['user_id'],
         date=make_timezone_naive(record['date']),
         product_id=record['product_id'],
         type=record['type'],
@@ -962,6 +978,7 @@ def record_to_adjustment(record) -> Adjustment:
 def record_to_activity(record) -> Activity:
     return Activity(
         id=record['id'],
+        user_id=record['user_id'],
         date=make_timezone_naive(record['date']),
         activity=record['activity'],
         username=record.get('username', 'system'),
@@ -970,6 +987,7 @@ def record_to_activity(record) -> Activity:
 
 def record_to_settings(record) -> Settings:
     return Settings(
+        user_id=record['user_id'],
         business_name=record['business_name'],
         currency=record['currency'],
         tax_rate=record['tax_rate'],
