@@ -811,13 +811,14 @@ async def update_settings(
     return await db.fetchrow('SELECT * FROM settings WHERE user_id = $1', current_user.id)
 
 # Sync endpoint
+# Sync endpoint
 @app.post("/sync", response_model=SyncData)
 async def sync(
     data: Dict[str, Any],
     current_user: User = Depends(get_current_active_user),
     db=Depends(get_db)
 ):
-    try {
+    try:
         sync_data = SyncData(**data)
         server_time = datetime.now(timezone.utc).replace(tzinfo=None)
         
@@ -885,15 +886,12 @@ async def sync(
         logger.info(f"Sync completed successfully for {current_user.email}")
         return result
     
-    } catch (error) {
+    except Exception as error:
         logger.error(f"Sync error for {current_user.email}: {str(error)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
             detail=str(error)
         )
-    }
-}
-
 # Health check endpoint
 @app.get("/health")
 async def health_check():
