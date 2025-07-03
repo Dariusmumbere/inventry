@@ -307,9 +307,16 @@ async def init_db():
                 VALUES ($1, $2, $3, $4)
             ''', 'admin@stockmaster.ug', 'Admin User', hashed_password, 'admin')
 
-        # Create tables with user_id
+        # Drop and recreate tables with user_id
+        tables = ['products', 'categories', 'suppliers', 'sales', 'purchases', 'adjustments', 'activities', 'settings']
+        
+        for table in tables:
+            # Drop table if exists (this will delete all data!)
+            await conn.execute(f'DROP TABLE IF EXISTS {table} CASCADE')
+            
+        # Recreate tables with proper schema
         await conn.execute('''
-            CREATE TABLE IF NOT EXISTS products (
+            CREATE TABLE products (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 name TEXT NOT NULL,
@@ -326,7 +333,7 @@ async def init_db():
         ''')
         
         await conn.execute('''
-            CREATE TABLE IF NOT EXISTS categories (
+            CREATE TABLE categories (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 name TEXT NOT NULL,
@@ -335,7 +342,7 @@ async def init_db():
         ''')
         
         await conn.execute('''
-            CREATE TABLE IF NOT EXISTS suppliers (
+            CREATE TABLE suppliers (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 name TEXT NOT NULL,
@@ -349,7 +356,7 @@ async def init_db():
         ''')
         
         await conn.execute('''
-            CREATE TABLE IF NOT EXISTS sales (
+            CREATE TABLE sales (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 date TIMESTAMP WITHOUT TIME ZONE NOT NULL,
@@ -362,7 +369,7 @@ async def init_db():
         ''')
         
         await conn.execute('''
-            CREATE TABLE IF NOT EXISTS purchases (
+            CREATE TABLE purchases (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 date TIMESTAMP WITHOUT TIME ZONE NOT NULL,
@@ -375,7 +382,7 @@ async def init_db():
         ''')
         
         await conn.execute('''
-            CREATE TABLE IF NOT EXISTS adjustments (
+            CREATE TABLE adjustments (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 date TIMESTAMP WITHOUT TIME ZONE NOT NULL,
@@ -388,7 +395,7 @@ async def init_db():
         ''')
         
         await conn.execute('''
-            CREATE TABLE IF NOT EXISTS activities (
+            CREATE TABLE activities (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 date TIMESTAMP WITHOUT TIME ZONE NOT NULL,
@@ -399,7 +406,7 @@ async def init_db():
         ''')
         
         await conn.execute('''
-            CREATE TABLE IF NOT EXISTS settings (
+            CREATE TABLE settings (
                 user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
                 business_name TEXT NOT NULL,
                 currency TEXT NOT NULL,
