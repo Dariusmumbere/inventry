@@ -90,7 +90,7 @@ class UserUpdate(BaseModel):
 # Inventory Models with user_id
 class Product(BaseModel):
     id: int
-    user_id: int
+    user_id: Optional[int] = None 
     name: str
     category_id: Optional[int] = None
     description: Optional[str] = None
@@ -109,13 +109,13 @@ class Product(BaseModel):
 
 class Category(BaseModel):
     id: int
-    user_id: int
+    user_id: Optional[int] = None 
     name: str
     description: Optional[str] = None
 
 class Supplier(BaseModel):
     id: int
-    user_id: int
+    user_id: Optional[int] = None 
     name: str
     contact_person: Optional[str] = None
     phone: str
@@ -132,7 +132,7 @@ class SaleItem(BaseModel):
 
 class Sale(BaseModel):
     id: int
-    user_id: int
+    user_id: Optional[int] = None 
     date: datetime
     invoice_number: str
     customer: Optional[str] = None
@@ -153,7 +153,7 @@ class PurchaseItem(BaseModel):
 
 class Purchase(BaseModel):
     id: int
-    user_id: int
+    user_id: Optional[int] = None 
     date: datetime
     reference_number: str
     supplier_id: int
@@ -168,7 +168,7 @@ class Purchase(BaseModel):
 
 class Adjustment(BaseModel):
     id: int
-    user_id: int
+    user_id: Optional[int] = None 
     date: datetime
     product_id: int
     type: str  # 'add' or 'remove'
@@ -183,7 +183,7 @@ class Adjustment(BaseModel):
 
 class Activity(BaseModel):
     id: int
-    user_id: int
+    user_id: Optional[int] = None 
     date: datetime
     activity: str
     username: str = "system"
@@ -195,7 +195,7 @@ class Activity(BaseModel):
         }
 
 class Settings(BaseModel):
-    user_id: int
+    user_id: Optional[int] = None 
     business_name: str
     currency: str
     tax_rate: float
