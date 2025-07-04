@@ -824,34 +824,73 @@ async def sync(
     db=Depends(get_db)
 ):
     try:
-        # Validate and clean incoming data
+        # Validate incoming data (user_id is optional in models)
         sync_data = SyncData(**data)
         server_time = datetime.now(timezone.utc).replace(tzinfo=None)
         
-        logger.info(f"Received sync data from {current_user.email}")
-        
+        # Prepare response data
         result = SyncData(last_sync_time=server_time)
         
         async with db.acquire() as conn:
-            # Process products - ensure they belong to current user
-            for product in sync_data.products:
-                if product.user_id != current_user.id:
-                    continue  # Skip products that don't belong to this user
+            # Process categories - set user_id if missing
+            for category in sync_data.categories:
+                if not category.user_id:
+                    category.user_id = current_user.id
                     
                 existing = await conn.fetchrow(
-                    'SELECT * FROM products WHERE id = $1 AND user_id = $2', 
+                    'SELECT * FROM categories WHERE id = $1 AND user_id = $2', 
+                    category.id, current_user.id
+                )
+                if existing:
+                    await conn.execute('''
+                        UPDATE categories SET 
+                            name = $1, description = $2
+                        WHERE id = $3 AND user_id = $4
+                    ''', category.name, category.description,
+                        category.id, current_user.id)
+                else:
+                    await conn.execute('''
+                        INSERT INTO categories (
+                            id, user_id, name, description
+                        ) VALUES ($1, $2, $3, $4)
+                    ''', category.id, current_user.id, 
+                        category.name, category.description)
+            
+            # Process activities - set user_id if missing
+            for activity in sync_data.activities:
+                if not activity.user_id:
+                    activity.user_id = current_user.id
+                    
+                await conn.execute('''
+                    INSERT INTO activities (
+                        id, user_id, date, activity, username, details
+                    ) VALUES ($1, $2, $3, $4, $5, $6)
+                    ON CONFLICT (id) DO UPDATE SET
+                        date = EXCLUDED.date,
+                        activity = EXCLUDED.activity,
+                        details = EXCLUDED.details
+                ''', activity.id, current_user.id, make_timezone_naive(activity.date),
+                    activity.activity, activity.username, activity.details)
+            
+            # Process products - set user_id if missing
+            for product in sync_data.products:
+                if not product.user_id:
+                    product.user_id = current_user.id
+                    
+                existing = await conn.fetchrow(
+                    'SELECT * FROM products WHERE id = $1 AND user_id = $2',
                     product.id, current_user.id
                 )
                 if existing:
                     await conn.execute('''
-                        UPDATE products SET 
+                        UPDATE products SET
                             name = $1, category_id = $2, description = $3,
                             purchase_price = $4, selling_price = $5, stock = $6,
                             reorder_level = $7, unit = $8, barcode = $9
                         WHERE id = $10 AND user_id = $11
                     ''', product.name, product.category_id, product.description,
                         product.purchase_price, product.selling_price, product.stock,
-                        product.reorder_level, product.unit, product.barcode, 
+                        product.reorder_level, product.unit, product.barcode,
                         product.id, current_user.id)
                 else:
                     await conn.execute('''
@@ -859,14 +898,15 @@ async def sync(
                             id, user_id, name, category_id, description, purchase_price,
                             selling_price, stock, reorder_level, unit, barcode, created_at
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                    ''', product.id, current_user.id, product.name, product.category_id, 
-                        product.description, product.purchase_price, product.selling_price, 
-                        product.stock, product.reorder_level, product.unit, product.barcode, 
+                    ''', product.id, current_user.id, product.name, product.category_id,
+                        product.description, product.purchase_price, product.selling_price,
+                        product.stock, product.reorder_level, product.unit, product.barcode,
                         make_timezone_naive(product.created_at) or server_time)
             
-            # Process other entities similarly with user_id validation
+            # Process other entities similarly (suppliers, sales, purchases, adjustments)
+            # ... (follow the same pattern as above)
             
-            # Get all user data from server to send back to client
+            # Get all updated data to send back to client
             result.products = [record_to_product(p) for p in 
                 await conn.fetch('SELECT * FROM products WHERE user_id = $1 ORDER BY id', current_user.id)]
             
@@ -886,7 +926,12 @@ async def sync(
                 await conn.fetch('SELECT * FROM adjustments WHERE user_id = $1 ORDER BY id', current_user.id)]
             
             result.activities = [record_to_activity(a) for a in 
-                await conn.fetch('SELECT * FROM activities WHERE user_id = $1 ORDER BY date DESC LIMIT 100', current_user.id)]
+                await conn.fetch('''
+                    SELECT * FROM activities 
+                    WHERE user_id = $1 
+                    ORDER BY date DESC 
+                    LIMIT 100
+                ''', current_user.id)]
             
             settings_record = await conn.fetchrow('SELECT * FROM settings WHERE user_id = $1', current_user.id)
             if settings_record:
@@ -895,11 +940,25 @@ async def sync(
         logger.info(f"Sync completed successfully for {current_user.email}")
         return result
     
+    except ValidationError as ve:
+        logger.error(f"Validation error during sync for {current_user.email}: {str(ve)}")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=ve.errors()
+        )
+        
+    except asyncpg.UniqueViolationError as uve:
+        logger.error(f"Duplicate data during sync for {current_user.email}: {str(uve)}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Duplicate data detected in sync"
+        )
+        
     except Exception as error:
         logger.error(f"Sync error for {current_user.email}: {str(error)}", exc_info=True)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
-            detail=str(error)
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred during sync"
         )
         
 # Health check endpoint
