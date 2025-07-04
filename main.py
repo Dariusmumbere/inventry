@@ -903,8 +903,144 @@ async def sync(
                         product.stock, product.reorder_level, product.unit, product.barcode,
                         make_timezone_naive(product.created_at) or server_time)
             
-            # Process other entities similarly (suppliers, sales, purchases, adjustments)
-            # ... (follow the same pattern as above)
+            # Process suppliers - set user_id if missing
+            for supplier in sync_data.suppliers:
+                if not supplier.user_id:
+                    supplier.user_id = current_user.id
+                    
+                existing = await conn.fetchrow(
+                    'SELECT * FROM suppliers WHERE id = $1 AND user_id = $2',
+                    supplier.id, current_user.id
+                )
+                if existing:
+                    await conn.execute('''
+                        UPDATE suppliers SET
+                            name = $1, contact_person = $2, phone = $3,
+                            email = $4, address = $5, products = $6,
+                            payment_terms = $7
+                        WHERE id = $8 AND user_id = $9
+                    ''', supplier.name, supplier.contact_person, supplier.phone,
+                        supplier.email, supplier.address, supplier.products,
+                        supplier.payment_terms, supplier.id, current_user.id)
+                else:
+                    await conn.execute('''
+                        INSERT INTO suppliers (
+                            id, user_id, name, contact_person, phone,
+                            email, address, products, payment_terms
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    ''', supplier.id, current_user.id, supplier.name,
+                        supplier.contact_person, supplier.phone, supplier.email,
+                        supplier.address, supplier.products, supplier.payment_terms)
+            
+            # Process sales - set user_id if missing
+            for sale in sync_data.sales:
+                if not sale.user_id:
+                    sale.user_id = current_user.id
+                    
+                existing = await conn.fetchrow(
+                    'SELECT * FROM sales WHERE id = $1 AND user_id = $2',
+                    sale.id, current_user.id
+                )
+                if existing:
+                    await conn.execute('''
+                        UPDATE sales SET
+                            date = $1, invoice_number = $2, customer = $3,
+                            items = $4, payment_method = $5, notes = $6
+                        WHERE id = $7 AND user_id = $8
+                    ''', make_timezone_naive(sale.date), sale.invoice_number,
+                        sale.customer, json.dumps([item.dict() for item in sale.items]),
+                        sale.payment_method, sale.notes, sale.id, current_user.id)
+                else:
+                    await conn.execute('''
+                        INSERT INTO sales (
+                            id, user_id, date, invoice_number, customer,
+                            items, payment_method, notes
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    ''', sale.id, current_user.id, make_timezone_naive(sale.date),
+                        sale.invoice_number, sale.customer,
+                        json.dumps([item.dict() for item in sale.items]),
+                        sale.payment_method, sale.notes)
+            
+            # Process purchases - set user_id if missing
+            for purchase in sync_data.purchases:
+                if not purchase.user_id:
+                    purchase.user_id = current_user.id
+                    
+                existing = await conn.fetchrow(
+                    'SELECT * FROM purchases WHERE id = $1 AND user_id = $2',
+                    purchase.id, current_user.id
+                )
+                if existing:
+                    await conn.execute('''
+                        UPDATE purchases SET
+                            date = $1, reference_number = $2, supplier_id = $3,
+                            items = $4, payment_method = $5, notes = $6
+                        WHERE id = $7 AND user_id = $8
+                    ''', make_timezone_naive(purchase.date), purchase.reference_number,
+                        purchase.supplier_id, json.dumps([item.dict() for item in purchase.items]),
+                        purchase.payment_method, purchase.notes, purchase.id, current_user.id)
+                else:
+                    await conn.execute('''
+                        INSERT INTO purchases (
+                            id, user_id, date, reference_number, supplier_id,
+                            items, payment_method, notes
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    ''', purchase.id, current_user.id, make_timezone_naive(purchase.date),
+                        purchase.reference_number, purchase.supplier_id,
+                        json.dumps([item.dict() for item in purchase.items]),
+                        purchase.payment_method, purchase.notes)
+            
+            # Process adjustments - set user_id if missing
+            for adjustment in sync_data.adjustments:
+                if not adjustment.user_id:
+                    adjustment.user_id = current_user.id
+                    
+                existing = await conn.fetchrow(
+                    'SELECT * FROM adjustments WHERE id = $1 AND user_id = $2',
+                    adjustment.id, current_user.id
+                )
+                if existing:
+                    await conn.execute('''
+                        UPDATE adjustments SET
+                            date = $1, product_id = $2, type = $3,
+                            quantity = $4, reason = $5, username = $6
+                        WHERE id = $7 AND user_id = $8
+                    ''', make_timezone_naive(adjustment.date), adjustment.product_id,
+                        adjustment.type, adjustment.quantity, adjustment.reason,
+                        adjustment.username, adjustment.id, current_user.id)
+                else:
+                    await conn.execute('''
+                        INSERT INTO adjustments (
+                            id, user_id, date, product_id, type,
+                            quantity, reason, username
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    ''', adjustment.id, current_user.id, make_timezone_naive(adjustment.date),
+                        adjustment.product_id, adjustment.type, adjustment.quantity,
+                        adjustment.reason, adjustment.username)
+            
+            # Process settings
+            if sync_data.settings:
+                if not sync_data.settings.user_id:
+                    sync_data.settings.user_id = current_user.id
+                    
+                await conn.execute('''
+                    INSERT INTO settings (
+                        user_id, business_name, currency, tax_rate,
+                        low_stock_threshold, invoice_prefix, purchase_prefix
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        business_name = EXCLUDED.business_name,
+                        currency = EXCLUDED.currency,
+                        tax_rate = EXCLUDED.tax_rate,
+                        low_stock_threshold = EXCLUDED.low_stock_threshold,
+                        invoice_prefix = EXCLUDED.invoice_prefix,
+                        purchase_prefix = EXCLUDED.purchase_prefix,
+                        updated_at = CURRENT_TIMESTAMP
+                ''', current_user.id, sync_data.settings.business_name,
+                    sync_data.settings.currency, sync_data.settings.tax_rate,
+                    sync_data.settings.low_stock_threshold,
+                    sync_data.settings.invoice_prefix,
+                    sync_data.settings.purchase_prefix)
             
             # Get all updated data to send back to client
             result.products = [record_to_product(p) for p in 
