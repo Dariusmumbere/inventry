@@ -94,10 +94,10 @@ class Product(BaseModel):
     name: str
     category_id: Optional[int] = None
     description: Optional[str] = None
-    purchase_price: float
-    selling_price: float
+    purchase_price: Optional[float] = None
+    selling_price: Optional[float] = None
     stock: int
-    reorder_level: int
+    reorder_level: Optional[int] = None
     unit: str
     barcode: Optional[str] = None
     created_at: Optional[datetime] = None
