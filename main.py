@@ -197,17 +197,17 @@ class Activity(BaseModel):
 
 class Settings(BaseModel):
     user_id: Optional[int] = None 
-    business_name: str = Field(..., alias="businessName")
-    currency: str
-    tax_rate: float = Field(..., alias="taxRate")  # Changed from Decimal to float
-    low_stock_threshold: int = Field(..., alias="lowStockThreshold")
-    invoice_prefix: str = Field(..., alias="invoicePrefix")
-    purchase_prefix: str = Field(..., alias="purchasePrefix")
+    business_name: str = Field(default="StockMaster UG", alias="businessName")
+    currency: str = "UGX"
+    tax_rate: float = Field(default=18.0, alias="taxRate")
+    low_stock_threshold: int = Field(default=5, alias="lowStockThreshold")
+    invoice_prefix: str = Field(default="INV", alias="invoicePrefix")
+    purchase_prefix: str = Field(default="PUR", alias="purchasePrefix")
 
     class Config:
         allow_population_by_field_name = True
         json_encoders = {
-            Decimal: lambda v: float(v)  # Convert Decimal to float for JSON serialization
+            Decimal: lambda v: float(v)
         }
         
 class SyncData(BaseModel):
