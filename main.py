@@ -417,7 +417,7 @@ async def init_db():
                 user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
                 business_name TEXT NOT NULL,
                 currency TEXT NOT NULL,
-                tax_rate FLOAT NOT NULL,  # Changed to FLOAT
+                tax_rate FLOAT NOT NULL, 
                 low_stock_threshold INTEGER NOT NULL,
                 invoice_prefix TEXT NOT NULL,
                 purchase_prefix TEXT NOT NULL,
