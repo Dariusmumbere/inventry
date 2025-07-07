@@ -196,13 +196,16 @@ class Activity(BaseModel):
 
 class Settings(BaseModel):
     user_id: Optional[int] = None 
-    business_name: str
+    business_name: str = Field(..., alias="businessName")
     currency: str
-    tax_rate: float
-    low_stock_threshold: int
-    invoice_prefix: str
-    purchase_prefix: str
+    tax_rate: float = Field(..., alias="taxRate")
+    low_stock_threshold: int = Field(..., alias="lowStockThreshold")
+    invoice_prefix: str = Field(..., alias="invoicePrefix")
+    purchase_prefix: str = Field(..., alias="purchasePrefix")
 
+    class Config:
+        allow_population_by_field_name = True
+        
 class SyncData(BaseModel):
     last_sync_time: Optional[datetime] = None
     products: List[Product] = []
