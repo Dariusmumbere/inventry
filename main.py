@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, EmailStr, ValidationError
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 from jose import JWTError, jwt
+from decimal import Decimal
 from passlib.context import CryptContext
 import asyncpg
 import os
@@ -198,13 +199,16 @@ class Settings(BaseModel):
     user_id: Optional[int] = None 
     business_name: str = Field(..., alias="businessName")
     currency: str
-    tax_rate: float = Field(..., alias="taxRate")
+    tax_rate: float = Field(..., alias="taxRate")  # Changed from Decimal to float
     low_stock_threshold: int = Field(..., alias="lowStockThreshold")
     invoice_prefix: str = Field(..., alias="invoicePrefix")
     purchase_prefix: str = Field(..., alias="purchasePrefix")
 
     class Config:
         allow_population_by_field_name = True
+        json_encoders = {
+            Decimal: lambda v: float(v)  # Convert Decimal to float for JSON serialization
+        }
         
 class SyncData(BaseModel):
     last_sync_time: Optional[datetime] = None
@@ -413,7 +417,7 @@ async def init_db():
                 user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
                 business_name TEXT NOT NULL,
                 currency TEXT NOT NULL,
-                tax_rate DECIMAL(5, 2) NOT NULL,
+                tax_rate FLOAT NOT NULL,  # Changed to FLOAT
                 low_stock_threshold INTEGER NOT NULL,
                 invoice_prefix TEXT NOT NULL,
                 purchase_prefix TEXT NOT NULL,
@@ -1201,3 +1205,4 @@ def record_to_settings(record) -> Settings:
         invoice_prefix=record['invoice_prefix'],
         purchase_prefix=record['purchase_prefix']
     )
+
