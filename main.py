@@ -797,7 +797,8 @@ async def get_settings(
     settings_record = await db.fetchrow('SELECT * FROM settings WHERE user_id = $1', current_user.id)
     if not settings_record:
         raise HTTPException(status_code=404, detail="Settings not found")
-    return record_to_settings(settings_record)
+    settings = record_to_settings(settings_record)
+    return jsonable_encoder(settings)  # Use FastAPI's jsonable_encoder
 
 @app.put("/settings", response_model=Settings)
 async def update_settings(
@@ -811,7 +812,7 @@ async def update_settings(
             low_stock_threshold = $4, invoice_prefix = $5,
             purchase_prefix = $6, updated_at = CURRENT_TIMESTAMP
         WHERE user_id = $7
-    ''', settings.business_name, settings.currency, settings.tax_rate,
+    ''', settings.business_name, settings.currency, float(settings.tax_rate),  # Explicitly convert to float
         settings.low_stock_threshold, settings.invoice_prefix,
         settings.purchase_prefix, current_user.id)
     
@@ -822,7 +823,8 @@ async def update_settings(
     ''', current_user.id, datetime.now(timezone.utc), 'Settings updated', current_user.email,
         'Updated system settings')
     
-    return await db.fetchrow('SELECT * FROM settings WHERE user_id = $1', current_user.id)
+    updated_settings = await db.fetchrow('SELECT * FROM settings WHERE user_id = $1', current_user.id)
+    return jsonable_encoder(record_to_settings(updated_settings))
 
 @app.post("/sync", response_model=SyncData)
 async def sync(
@@ -831,7 +833,11 @@ async def sync(
     db=Depends(get_db)
 ):
     try:
-        # Validate incoming data (user_id is optional in models)
+        # Convert Decimal values to float in incoming data
+        if 'settings' in data and 'taxRate' in data['settings']:
+            data['settings']['taxRate'] = float(data['settings']['taxRate'])
+        
+        # Validate incoming data
         sync_data = SyncData(**data)
         server_time = datetime.now(timezone.utc).replace(tzinfo=None)
         
@@ -839,7 +845,7 @@ async def sync(
         result = SyncData(last_sync_time=server_time)
         
         async with db.acquire() as conn:
-            # Process categories - set user_id if missing
+            # Process categories
             for category in sync_data.categories:
                 if not category.user_id:
                     category.user_id = current_user.id
@@ -863,7 +869,7 @@ async def sync(
                     ''', category.id, current_user.id, 
                         category.name, category.description)
             
-            # Process activities - set user_id if missing
+            # Process activities
             for activity in sync_data.activities:
                 if not activity.user_id:
                     activity.user_id = current_user.id
@@ -879,7 +885,7 @@ async def sync(
                 ''', activity.id, current_user.id, make_timezone_naive(activity.date),
                     activity.activity, activity.username, activity.details)
             
-            # Process products - set user_id if missing
+            # Process products
             for product in sync_data.products:
                 if not product.user_id:
                     product.user_id = current_user.id
@@ -896,8 +902,9 @@ async def sync(
                             reorder_level = $7, unit = $8, barcode = $9
                         WHERE id = $10 AND user_id = $11
                     ''', product.name, product.category_id, product.description,
-                        product.purchase_price, product.selling_price, product.stock,
-                        product.reorder_level, product.unit, product.barcode,
+                        float(product.purchase_price) if product.purchase_price else None,
+                        float(product.selling_price) if product.selling_price else None,
+                        product.stock, product.reorder_level, product.unit, product.barcode,
                         product.id, current_user.id)
                 else:
                     await conn.execute('''
@@ -906,11 +913,13 @@ async def sync(
                             selling_price, stock, reorder_level, unit, barcode, created_at
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                     ''', product.id, current_user.id, product.name, product.category_id,
-                        product.description, product.purchase_price, product.selling_price,
+                        product.description,
+                        float(product.purchase_price) if product.purchase_price else None,
+                        float(product.selling_price) if product.selling_price else None,
                         product.stock, product.reorder_level, product.unit, product.barcode,
                         make_timezone_naive(product.created_at) or server_time)
             
-            # Process suppliers - set user_id if missing
+            # Process suppliers
             for supplier in sync_data.suppliers:
                 if not supplier.user_id:
                     supplier.user_id = current_user.id
@@ -939,7 +948,7 @@ async def sync(
                         supplier.contact_person, supplier.phone, supplier.email,
                         supplier.address, supplier.products, supplier.payment_terms)
             
-            # Process sales - set user_id if missing
+            # Process sales
             for sale in sync_data.sales:
                 if not sale.user_id:
                     sale.user_id = current_user.id
@@ -955,7 +964,7 @@ async def sync(
                             items = $4, payment_method = $5, notes = $6
                         WHERE id = $7 AND user_id = $8
                     ''', make_timezone_naive(sale.date), sale.invoice_number,
-                        sale.customer, json.dumps([item.dict() for item in sale.items]),
+                        sale.customer, json.dumps([{**item.dict(), 'price': float(item.price)} for item in sale.items]),
                         sale.payment_method, sale.notes, sale.id, current_user.id)
                 else:
                     await conn.execute('''
@@ -965,10 +974,10 @@ async def sync(
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     ''', sale.id, current_user.id, make_timezone_naive(sale.date),
                         sale.invoice_number, sale.customer,
-                        json.dumps([item.dict() for item in sale.items]),
+                        json.dumps([{**item.dict(), 'price': float(item.price)} for item in sale.items]),
                         sale.payment_method, sale.notes)
             
-            # Process purchases - set user_id if missing
+            # Process purchases
             for purchase in sync_data.purchases:
                 if not purchase.user_id:
                     purchase.user_id = current_user.id
@@ -984,7 +993,7 @@ async def sync(
                             items = $4, payment_method = $5, notes = $6
                         WHERE id = $7 AND user_id = $8
                     ''', make_timezone_naive(purchase.date), purchase.reference_number,
-                        purchase.supplier_id, json.dumps([item.dict() for item in purchase.items]),
+                        purchase.supplier_id, json.dumps([{**item.dict(), 'price': float(item.price)} for item in purchase.items]),
                         purchase.payment_method, purchase.notes, purchase.id, current_user.id)
                 else:
                     await conn.execute('''
@@ -994,10 +1003,10 @@ async def sync(
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     ''', purchase.id, current_user.id, make_timezone_naive(purchase.date),
                         purchase.reference_number, purchase.supplier_id,
-                        json.dumps([item.dict() for item in purchase.items]),
+                        json.dumps([{**item.dict(), 'price': float(item.price)} for item in purchase.items]),
                         purchase.payment_method, purchase.notes)
             
-            # Process adjustments - set user_id if missing
+            # Process adjustments
             for adjustment in sync_data.adjustments:
                 if not adjustment.user_id:
                     adjustment.user_id = current_user.id
@@ -1044,7 +1053,7 @@ async def sync(
                         purchase_prefix = EXCLUDED.purchase_prefix,
                         updated_at = CURRENT_TIMESTAMP
                 ''', current_user.id, sync_data.settings.business_name,
-                    sync_data.settings.currency, sync_data.settings.tax_rate,
+                    sync_data.settings.currency, float(sync_data.settings.tax_rate),
                     sync_data.settings.low_stock_threshold,
                     sync_data.settings.invoice_prefix,
                     sync_data.settings.purchase_prefix)
@@ -1081,7 +1090,7 @@ async def sync(
                 result.settings = record_to_settings(settings_record)
             
         logger.info(f"Sync completed successfully for {current_user.email}")
-        return result
+        return jsonable_encoder(result)
     
     except ValidationError as ve:
         logger.error(f"Validation error during sync for {current_user.email}: {str(ve)}")
