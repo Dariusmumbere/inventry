@@ -95,7 +95,7 @@ class Product(BaseModel):
     name: str
     category_id: Optional[int] = None
     description: Optional[str] = None
-    purchase_price: Optional[float] = None
+    purchase_price: float
     selling_price: Optional[float] = None
     stock: int
     reorder_level: Optional[int] = None
