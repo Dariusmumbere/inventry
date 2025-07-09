@@ -95,10 +95,10 @@ class Product(BaseModel):
     name: str
     category_id: Optional[int] = None
     description: Optional[str] = None
-    purchase_price: Optional[float] = None
-    selling_price: Optional[float] = None
+    purchase_price: float  # Changed from Optional[float] to float
+    selling_price: float  # Changed from Optional[float] to float
     stock: int
-    reorder_level: Optional[int] = None
+    reorder_level: int  # Changed from Optional[int] to int
     unit: str
     barcode: Optional[str] = None
     created_at: Optional[datetime] = None
@@ -595,6 +595,23 @@ async def create_product(
     current_user: User = Depends(get_current_active_user),
     db=Depends(get_db)
 ):
+    # Ensure required fields are provided
+    if product.purchase_price is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Purchase price is required"
+        )
+    if product.selling_price is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Selling price is required"
+        )
+    if product.reorder_level is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Reorder level is required"
+        )
+
     product_id = await db.fetchval('''
         INSERT INTO products (
             user_id, name, category_id, description, purchase_price,
@@ -902,9 +919,11 @@ async def sync(
                             reorder_level = $7, unit = $8, barcode = $9
                         WHERE id = $10 AND user_id = $11
                     ''', product.name, product.category_id, product.description,
-                        float(product.purchase_price) if product.purchase_price else None,
-                        float(product.selling_price) if product.selling_price else None,
-                        product.stock, product.reorder_level, product.unit, product.barcode,
+                        float(product.purchase_price) if product.purchase_price is not None else 0.0,
+                        float(product.selling_price) if product.selling_price is not None else 0.0,
+                        product.stock, 
+                        product.reorder_level if product.reorder_level is not None else 0,
+                        product.unit, product.barcode,
                         product.id, current_user.id)
                 else:
                     await conn.execute('''
@@ -914,9 +933,11 @@ async def sync(
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                     ''', product.id, current_user.id, product.name, product.category_id,
                         product.description,
-                        float(product.purchase_price) if product.purchase_price else None,
-                        float(product.selling_price) if product.selling_price else None,
-                        product.stock, product.reorder_level, product.unit, product.barcode,
+                        float(product.purchase_price) if product.purchase_price is not None else 0.0,
+                        float(product.selling_price) if product.selling_price is not None else 0.0,
+                        product.stock, 
+                        product.reorder_level if product.reorder_level is not None else 0,
+                        product.unit, product.barcode,
                         make_timezone_naive(product.created_at) or server_time)
             
             # Process suppliers
@@ -1214,4 +1235,3 @@ def record_to_settings(record) -> Settings:
         invoice_prefix=record['invoice_prefix'],
         purchase_prefix=record['purchase_prefix']
     )
-
